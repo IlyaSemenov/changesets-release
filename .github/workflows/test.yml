@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     name: Test
-    # Release commits are verified by release:check before they are pushed.
+    # A release commit only versions a commit whose CI the release has waited for.
     # A skipped job satisfies required status checks, unlike a skipped workflow.
     if: ${{ !startsWith(github.event.head_commit.message, 'Release ') }}
     runs-on: ubuntu-latest
@@ -34,6 +34,9 @@ jobs:
 
       - name: Install deps
         run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint:check
 
       - name: Build package
         run: bun run build

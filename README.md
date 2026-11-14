@@ -182,15 +182,19 @@ changesets-local marks the GitHub Releases of prerelease versions as prereleases
 
 ## Check the release before publishing
 
-Add a `release:check` script to the root `package.json` to run linting, type checks, tests, or a build before publishing:
+changesets-local [waits for CI](#wait-for-ci) of the commit you release, so keep linting, type checks, and tests in CI.
+For checks that CI does not run, add a `release:check` script to the root `package.json`, such as a test that installs the packed packages at the versions and dependency ranges that Changesets has just written:
 
 ```json
 {
   "scripts": {
-    "release:check": "npm run lint && npm run test && npm run build"
+    "release:check": "npm run test:packed"
   }
 }
 ```
+
+Do not repeat in `release:check` the checks of CI that versioning cannot affect, such as linting and unit tests: they check the same code again and only delay the release.
+If your repository has no CI, run all your checks in `release:check` instead.
 
 changesets-local runs it with your package manager after you confirm the release, and again before publishing when it finishes an interrupted release.
 The release stops if it fails.
@@ -255,8 +259,8 @@ changesets-local disables provenance for its publication, so a `provenance=true`
 
 ### Skip CI for release commits
 
-If `release:check` runs the same checks as your CI, you can skip CI jobs for release commits, which `release:check` has verified locally.
-Skip them with a job-level condition:
+A release commit that changesets-local creates only versions the commit whose CI it has waited for: it updates versions, dependency ranges, changelogs, changesets, and the lockfile.
+changesets-local does not wait for CI of the release commit itself, so to save CI time, skip CI jobs for release commits with a job-level condition:
 
 ```yaml
 jobs:

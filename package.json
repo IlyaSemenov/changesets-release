@@ -38,7 +38,6 @@
     "prepare": "lefthook install",
     "prepublishOnly": "bun run build",
     "release": "bun run build && node dist/cli.mjs",
-    "release:check": "bun run lint:check && bun run types && bun run test && bun run build",
     "test": "bun test --timeout 60000 --concurrent",
     "types": "bun check && bun check -p tests"
   },
