@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test"
 import {
   changeset,
   createFixture,
+  createPublishWorkflow,
   expectPackageReleased,
   expectReleased,
   type Fixture,
@@ -16,6 +17,14 @@ const subject = `Release ${packageName}@1.0.1`
 /** Counts `npm publish` attempts that reached the fake registry. */
 function countPublishAttempts(fixture: Fixture) {
   return fixture.calls("npm").filter(([command]) => command === "publish").length
+}
+
+/** Lists the `-f` fields of every `gh workflow run` call, including rejected ones, oldest first. */
+function listDispatchFields(fixture: Fixture) {
+  return fixture
+    .calls("gh")
+    .filter(([group, command]) => group === "workflow" && command === "run")
+    .map(args => args.filter((_, index) => args[index - 1] === "-f"))
 }
 
 /** Creates a fixture that publishes from GitHub Actions. */
@@ -65,13 +74,34 @@ describe("preparing a release for GitHub Actions", () => {
     expect(fixture.git("log", "-1", "--format=%s")).toBe(subject)
     expect(fixture.remoteGit("rev-parse", "main")).toBe(head)
     expect(fixture.state().gh.runs).toMatchObject([
-      { workflow: "publish.yml", ref: "refs/heads/main", inputs: { commit: head } },
+      {
+        workflow: "publish.yml",
+        ref: "refs/heads/main",
+        inputs: { commit: head, versions: `${packageName}@1.0.1` },
+      },
     ])
     expect(result.output).toContain("The publishing workflow succeeded")
     expect(countPublishAttempts(fixture)).toBe(0)
     expect(fixture.git("tag")).toBe("")
     expect(fixture.remoteGit("tag")).toBe("")
     expect(fixture.state().gh.releases).toEqual([])
+  })
+
+  it("dispatches a workflow without the versions input", async () => {
+    const fixture = createGitHubFixture()
+    fixture.write(".github/workflows/publish.yml", createPublishWorkflow(["commit"]))
+    fixture.git("commit", "--quiet", "--all", "--message", "Use the old workflow")
+    fixture.git("push", "--quiet")
+    const result = await prepare(fixture)
+    const head = fixture.git("rev-parse", "HEAD")
+    expect(listDispatchFields(fixture)).toEqual([
+      [`commit=${head}`, `versions=${packageName}@1.0.1`],
+      [`commit=${head}`],
+    ])
+    expect(fixture.state().gh.runs).toMatchObject([{ inputs: { commit: head } }])
+    expect(result.output).toContain(
+      ".github/workflows/publish.yml does not declare the `versions` input.",
+    )
   })
 
   it("needs no npm login", async () => {
@@ -585,6 +615,8 @@ describe("resuming a release published from GitHub Actions", () => {
     expect(failed.error?.message).toContain(`The release "${subject}" is incomplete.`)
     expect(fixture.remoteGit("log", "-1", "--format=%s", "main")).toBe(subject)
     expect(fixture.state().gh.runs).toEqual([])
+    // Only a rejection of undeclared inputs dispatches again.
+    expect(listDispatchFields(fixture)).toHaveLength(1)
 
     fixture.updateState(state => {
       state.gh.workflows["publish.yml"] = "active"

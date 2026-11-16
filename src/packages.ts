@@ -83,9 +83,14 @@ export const releaseSubjectPrefix = "Release "
 
 /** Formats the subject of a release commit, such as `Release a@1.0.0, b@2.0.0`, with packages sorted by name. */
 export function formatReleaseSubject(releases: Array<{ name: string; version: string }>) {
-  return `${releaseSubjectPrefix}${sortByName(releases)
+  return `${releaseSubjectPrefix}${formatReleaseVersions(releases)}`
+}
+
+/** Formats the package versions of a release as its subject lists them, such as `a@1.0.0, b@2.0.0`. */
+export function formatReleaseVersions(releases: Array<{ name: string; version: string }>) {
+  return sortByName(releases)
     .map(release => `${release.name}@${release.version}`)
-    .join(", ")}`
+    .join(", ")
 }
 
 /**

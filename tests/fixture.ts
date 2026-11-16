@@ -124,6 +124,22 @@ export interface Fixture {
 /** GitHub repository of the fixtures. */
 export const githubRepo = "owner/fixture"
 
+/** Returns the publishing workflow of the fixtures with its `workflow_dispatch` inputs, which the fake gh checks. */
+export function createPublishWorkflow(inputs = ["commit", "versions"]) {
+  return [
+    "name: Publish",
+    "on:",
+    "  workflow_dispatch:",
+    "    inputs:",
+    ...inputs.flatMap(name => [`      ${name}:`, "        type: string"]),
+    "jobs:",
+    "  publish:",
+    "    steps:",
+    '      - run: npx --no changesets-release ci "$COMMIT"',
+    "",
+  ].join("\n")
+}
+
 /** Returns a shell command that changes top-level fields of a JSON file with Node.js. */
 export function createJsonEditCommand(path: string, fields: Record<string, unknown>) {
   return `node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('${path}'));Object.assign(p,${JSON.stringify(fields).replaceAll('"', "'")});fs.writeFileSync('${path}',JSON.stringify(p))"`
@@ -302,10 +318,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     write(`.changeset/${name}.md`, content)
   }
   if (options.github) {
-    write(
-      ".github/workflows/publish.yml",
-      'name: Publish\njobs:\n  publish:\n    steps:\n      - run: npx --no changesets-release ci "$COMMIT"\n',
-    )
+    write(".github/workflows/publish.yml", createPublishWorkflow())
   }
   linkChangesets(dir)
   if (options.preTag) {

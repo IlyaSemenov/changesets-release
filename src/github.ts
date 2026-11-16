@@ -270,15 +270,20 @@ export async function getWorkflowRun(ctx: Context, repo: string, id: number) {
   return run!
 }
 
-/** Starts a workflow with `workflow_dispatch` on a branch, with the workflow file of that branch. */
-export function dispatchWorkflow(
+/**
+ * Starts a workflow with `workflow_dispatch` on a branch, with the workflow file of that branch, and returns whether it passed `optionalInputs`.
+ *
+ * Dispatches again without `optionalInputs` when GitHub rejects inputs that the workflow does not declare; a rejected dispatch starts no run.
+ */
+export async function dispatchWorkflow(
   ctx: Context,
   repo: string,
   workflow: string,
   ref: string,
   inputs: Record<string, string>,
+  optionalInputs: Record<string, string> = {},
 ) {
-  return runCommand(ctx, "gh", [
+  const formatArgs = (fields: Record<string, string>) => [
     "workflow",
     "run",
     workflow,
@@ -286,8 +291,23 @@ export function dispatchWorkflow(
     repo,
     "--ref",
     ref,
-    ...Object.entries(inputs).flatMap(([name, value]) => ["-f", `${name}=${value}`]),
-  ])
+    ...Object.entries(fields).flatMap(([name, value]) => ["-f", `${name}=${value}`]),
+  ]
+  let args = formatArgs({ ...inputs, ...optionalInputs })
+  let result = await captureCommand(ctx, "gh", args)
+  const passedOptional =
+    result.code === 0 ||
+    Object.keys(optionalInputs).length === 0 ||
+    // GitHub answers 422 "Unexpected inputs provided: [...]".
+    !result.stderr.includes("Unexpected inputs provided")
+  if (!passedOptional) {
+    args = formatArgs(inputs)
+    result = await captureCommand(ctx, "gh", args)
+  }
+  if (result.code !== 0) {
+    throw new ReleaseError(describeFailure("gh", args, result))
+  }
+  return passedOptional
 }
 
 /** A failure of a GitHub API request that GitHub refused, such as for a token without access to the resource. */

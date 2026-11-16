@@ -213,7 +213,7 @@ Save this workflow as `.github/workflows/publish.yml`, commit it, and push it to
 
 ```yaml
 name: Publish
-run-name: Publish ${{ inputs.commit }}
+run-name: Publish ${{ inputs.versions || inputs.commit }}
 
 on:
   workflow_dispatch:
@@ -221,6 +221,10 @@ on:
       commit:
         description: Release commit
         required: true
+        type: string
+      versions:
+        description: Released versions, only for the run name
+        required: false
         type: string
 
 # One publication at a time; a new run waits for the running one.

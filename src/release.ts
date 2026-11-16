@@ -75,6 +75,7 @@ import {
 } from "./npm"
 import {
   formatReleaseSubject,
+  formatReleaseVersions,
   getManifestDir,
   isManifestPath,
   listCommitVersionChanges,
@@ -1064,7 +1065,13 @@ async function publishOnGitHub(ctx: Context, workspace: Workspace, state: Releas
       await pushCommit(ctx, upstream, state.commit)
     }
     await assertBranchAtRelease(ctx, workspace, state)
-    return dispatchPublication(ctx, repo, upstream.mergeRef, state.commit)
+    return dispatchPublication(
+      ctx,
+      repo,
+      upstream.mergeRef,
+      state.commit,
+      formatReleaseVersions(state.packages),
+    )
   })
   if (!run) {
     logWarning(

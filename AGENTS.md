@@ -18,7 +18,7 @@ Do not catalog files or restate information evident from their names and locatio
 - Keep integration and package-boundary tests in `tests/`.
 - Name runtime tests `*.test.ts` and compile-only type tests `*.type-test.ts`.
 - Keep static multi-line test inputs and expected outputs, such as Markdown, in files under a `fixtures/` directory next to the tests that use them.
-- Treat the command-line options, the `ci` command, the release commit subject `Release a@1.0.0, b@2.0.0`, the Changesets tag formats, the `release:check` script, the publishing workflow file `.github/workflows/publish.yml` with its `commit` input and the workflow template in README.md, and supported runtimes as public contracts.
+- Treat the command-line options, the `ci` command, the release commit subject `Release a@1.0.0, b@2.0.0`, the Changesets tag formats, the `release:check` script, the publishing workflow file `.github/workflows/publish.yml` with its `commit` and `versions` inputs and the workflow template in README.md, and supported runtimes as public contracts.
 
 ## Architecture
 
@@ -35,6 +35,7 @@ Do not catalog files or restate information evident from their names and locatio
 - Check the publisher once per run with `assertPublisherAccess`: before the confirmation, or before the push or dispatch in `--resume`.
 - Publish from GitHub Actions by default when HEAD has the publishing workflow, detected by `hasPublishWorkflow`, and from the machine otherwise, unless `--publish` says otherwise; never fall back from one mode to the other, and put `--publish` into the advice to resume when it differs from the default.
 - In GitHub mode, end the local run with dispatching the workflow: never publish, tag, or create GitHub Releases locally, and treat following the run as a convenience that Ctrl+C stops without failing.
+- Add new inputs of the publishing workflow as optional, and pass them in `optionalInputs` of `dispatchWorkflow`, so that workflows copied from an older template keep working.
 - Run the same `inspectRelease` and `finishRelease` in the publishing workflow through `publishFromWorkflow`; do not implement release steps in the workflow template.
 - Never let the workflow check out the `commit` input: its install step runs code of the checkout while the job can publish, and commits of forks are reachable by hash. The workflow runs at `GITHUB_SHA`, finishes only the release of the newest release commit on the remote base branch, and publishes only when `GITHUB_SHA` is that commit, since npm provenance names `GITHUB_SHA`.
 - Never dispatch the workflow while a run of it is in progress, and do not publish locally on `--resume` while one is in progress.

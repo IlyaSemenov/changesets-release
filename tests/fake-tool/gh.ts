@@ -236,10 +236,21 @@ function dispatchWorkflow({ args, state, stateDir }: FakeCall) {
       args[index - 1] === "-f" ? [arg.split("=", 2) as [string, string]] : [],
     ),
   )
-  const sha = spawnSync("git", ["rev-parse", option("--ref")], {
-    cwd: process.env.FAKE_REMOTE,
-    encoding: "utf8",
-  }).stdout.trim()
+  const readRemote = (...gitArgs: string[]) =>
+    spawnSync("git", gitArgs, { cwd: process.env.FAKE_REMOTE, encoding: "utf8" }).stdout
+  // The fixture workflows declare inputs as the only keys indented by 6 spaces.
+  const declared = new Set(
+    readRemote("show", `${option("--ref")}:.github/workflows/${workflow}`)
+      .split("\n")
+      .flatMap(line => /^ {6}([\w-]+):$/.exec(line)?.[1] ?? []),
+  )
+  const unexpected = Object.keys(inputs).filter(name => !declared.has(name))
+  if (unexpected.length > 0) {
+    fail(
+      `could not create workflow dispatch event: HTTP 422: Unexpected inputs provided: ${JSON.stringify(unexpected)}`,
+    )
+  }
+  const sha = readRemote("rev-parse", option("--ref")).trim()
   updateFakeState(stateDir, current => {
     current.gh.runs.push({
       id: current.gh.runs.length + 1,

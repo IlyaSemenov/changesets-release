@@ -82,6 +82,7 @@ export async function findActivePublishRun(ctx: Context, repo: string) {
 /**
  * Dispatches the publishing workflow for a release commit on a branch, and returns its run, or null when GitHub does not list it in time.
  *
+ * `versions` lists the package versions of the release, as its subject does, for the name of the run.
  * Fails without dispatching while a run is in progress, since it may be publishing the release.
  * The run is the one that was not listed before the dispatch.
  */
@@ -90,6 +91,7 @@ export async function dispatchPublication(
   repo: string,
   branchRef: string,
   commit: string,
+  versions: string,
 ): Promise<WorkflowRun | null> {
   const runs = await listWorkflowRuns(ctx, repo, publishWorkflowFile)
   const active = runs.find(run => run.status !== "completed")
@@ -100,7 +102,15 @@ export async function dispatchPublication(
   }
   const previous = new Set(runs.map(run => run.id))
   logStep(ctx, `Dispatching ${publishWorkflowFile} for ${commit.slice(0, 7)}`)
-  await dispatchWorkflow(ctx, repo, publishWorkflowFile, branchRef, { commit })
+  // Workflows copied from an older template do not declare `versions`.
+  if (
+    !(await dispatchWorkflow(ctx, repo, publishWorkflowFile, branchRef, { commit }, { versions }))
+  ) {
+    logDetail(
+      ctx,
+      `${publishWorkflowPath} does not declare the \`versions\` input. Update it from the template in the changesets-release README to name runs after the released versions.`,
+    )
+  }
   for (let attempt = 1; ; attempt++) {
     const runs = await listWorkflowRuns(ctx, repo, publishWorkflowFile)
     const run = runs.find(entry => !previous.has(entry.id))
