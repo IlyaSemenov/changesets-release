@@ -1,5 +1,15 @@
 # changesets-release
 
+## 2.0.0
+
+### Major Changes
+
+- 38856df: Rename the package and its command from `changesets-local` to `changesets-release`.
+
+### Minor Changes
+
+- d85ed26: Publish releases from GitHub Actions with npm trusted publishing and provenance, chosen with `--publish=github` or by adding the publishing workflow.
+
 ## 1.6.0
 
 ### Minor Changes
