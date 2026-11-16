@@ -1,5 +1,11 @@
 # changesets-release
 
+## 2.1.0
+
+### Minor Changes
+
+- 3be382a: Name runs of the publishing workflow after the released versions, such as `Publish my-package@1.5.0`, when the workflow declares the `versions` input of the README template.
+
 ## 2.0.1
 
 ### Patch Changes
