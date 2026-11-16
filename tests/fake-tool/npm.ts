@@ -30,7 +30,6 @@ const npmCommands: Record<string, FakeCommand> = {
   login,
   "access list": listCollaborators,
   "org ls": listOrgMembers,
-  "trust github": trustWorkflow,
 }
 
 function showUser(call: FakeCall) {
@@ -108,33 +107,6 @@ function listOrgMembers(call: FakeCall) {
     (scope in state.npm.scopes ? state.npm.scopes[scope] : [state.npm.user!]) ??
     registryError(call, "E404", `Not Found - GET -/org/${org}/user - Scope not found`)
   console.log(JSON.stringify(members.includes(user) ? { [user]: "developer" } : {}))
-}
-
-/** Makes a published package trust the publishing workflow of the fixture repository. */
-function trustWorkflow(call: FakeCall) {
-  const { args, state, stateDir } = call
-  const name = args[2]!
-  const option = (flag: string) => args[args.indexOf(flag) + 1]
-  if (
-    option("--repo") !== "owner/fixture" ||
-    option("--file") !== "publish.yml" ||
-    option("--env") !== "npm" ||
-    !args.includes("--allow-publish")
-  ) {
-    fail(`unexpected trusted publisher: ${args.join(" ")}`)
-  }
-  if (state.npm.trustFailure) {
-    registryError(call, "E403", "Two-factor authentication is required")
-  }
-  if (!state.npm.versions[name]?.length) {
-    registryError(call, "E404", `Not Found - ${name}`)
-  }
-  if (state.npm.trustedPublishers.includes(name)) {
-    registryError(call, "E409", `${name} already has a trusted publisher`)
-  }
-  updateFakeState(stateDir, current => {
-    current.npm.trustedPublishers.push(name)
-  })
 }
 
 function publish(call: FakeCall) {

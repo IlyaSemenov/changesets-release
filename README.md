@@ -264,11 +264,14 @@ The `commit` input only tells the workflow which release to finish; the workflow
 
 ### Configure trusted publishing
 
-Make each package that you publish trust the workflow:
+Right before the first release of a package from GitHub Actions, make it trust the workflow:
 
 ```sh
 npm trust github my-package --repo alice/my-package --file publish.yml --env npm --allow-publish
 ```
+
+npm drops a new trusted publisher that has not published within 2 days, so do not configure it earlier.
+If it has expired, find it with `npm trust list my-package`, delete it with `npm trust revoke my-package --id <id>`, and configure it again.
 
 `npm trust` needs npm 11.15.0 or later and asks for a one-time password.
 In a monorepo, run it for every published package.
@@ -289,8 +292,7 @@ npm configures trusted publishers only for packages that already exist, so publi
 npx changesets-release --publish=local
 ```
 
-After publishing, changesets-release offers to make the new packages trust the workflow with `npm trust`; answer yes and complete the npm authentication.
-Then release later versions as usual.
+Then [configure trusted publishing](#configure-trusted-publishing) of the package right before its next release, and release as usual.
 In a monorepo, do this whenever a release has a new package: changesets-release stops before the confirmation when a package of the release is not on npm yet.
 
 ### Choose where to publish

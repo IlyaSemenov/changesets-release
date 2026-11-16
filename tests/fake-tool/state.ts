@@ -25,8 +25,6 @@ export interface FakeState {
     cliVersion: string
     /** Packages whose trusted publisher is the publishing workflow; only they can be published from GitHub Actions. */
     trustedPublishers: string[]
-    /** Makes `npm trust github` fail. */
-    trustFailure: boolean
     /** Every publication that reached the registry. */
     publishes: Array<{
       tool: string
@@ -122,7 +120,6 @@ export function createFakeState(): FakeState {
       workflowUsers: { npm: null, pnpm: null },
       cliVersion: "11.16.0",
       trustedPublishers: [],
-      trustFailure: false,
       publishes: [],
       publishFailures: {},
       maintainers: {},

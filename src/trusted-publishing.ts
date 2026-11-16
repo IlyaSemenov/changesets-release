@@ -18,33 +18,10 @@ export interface TrustedPublisher {
   canRequestOidcToken: (env: NodeJS.ProcessEnv) => boolean
   /** How to let the job request an OIDC token, for the failure when it cannot. */
   oidcAdvice: string
-  /** Provider subcommand of `npm trust`, such as `github`. */
-  npmTrustProvider: string
-  /** Options of `npm trust` that identify the workflow. */
-  npmTrustOptions: string[]
 }
 
 /** Earliest npm CLI version that publishes with trusted publishing. */
 const minNpmVersion = "11.5.1"
-
-/** Earliest npm CLI version that configures trusted publishers with `npm trust`. */
-export const minTrustNpmVersion = "11.15.0"
-
-/** Returns the arguments of `npm trust` that make a package trust a publisher to publish it. */
-export function getTrustArgs(publisher: TrustedPublisher, name: string) {
-  return [
-    "trust",
-    publisher.npmTrustProvider,
-    name,
-    ...publisher.npmTrustOptions,
-    "--allow-publish",
-  ]
-}
-
-/** Checks whether npm has `npm trust`. */
-export async function hasNpmTrust(ctx: Context) {
-  return compareVersions(await readCommand(ctx, "npm", ["--version"]), minTrustNpmVersion) >= 0
-}
 
 /**
  * Fails unless a trusted publisher can publish public packages.
@@ -67,7 +44,7 @@ export async function assertTrustedPublishable(
   const unpublished = publicPackages.find((_, index) => versions[index]!.length === 0)
   if (unpublished) {
     throw new ReleaseError(
-      `${unpublished.name} is not on npm yet, and npm can only trust a publisher of an existing package. Release with \`--publish=local\` to publish its first version; changesets-release then offers to configure its trusted publisher.`,
+      `${unpublished.name} is not on npm yet, and npm can only trust a publisher of an existing package. Release with \`--publish=local\` to publish its first version, and configure its trusted publisher right before its next release.`,
     )
   }
   if (!provenance) {

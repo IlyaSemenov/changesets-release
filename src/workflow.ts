@@ -25,9 +25,6 @@ export const publishWorkflowFile = "publish.yml"
 /** Path of the publishing workflow in the repository. */
 export const publishWorkflowPath = `.github/workflows/${publishWorkflowFile}`
 
-/** GitHub environment of the publishing job, which the npm trusted publisher requires. */
-export const publishEnvironment = "npm"
-
 /** Returns the publishing workflow of a GitHub repository, given as `OWNER/REPO`, as the trusted publisher of its packages. */
 export function getPublishWorkflowPublisher(repo: string): TrustedPublisher {
   return {
@@ -37,8 +34,6 @@ export function getPublishWorkflowPublisher(repo: string): TrustedPublisher {
     // GitHub Actions sets the variable only for jobs with `id-token: write`.
     canRequestOidcToken: env => Boolean(env.ACTIONS_ID_TOKEN_REQUEST_URL),
     oidcAdvice: "Grant the workflow `id-token: write` in `permissions`.",
-    npmTrustProvider: "github",
-    npmTrustOptions: ["--repo", repo, "--file", publishWorkflowFile, "--env", publishEnvironment],
   }
 }
 

@@ -39,8 +39,7 @@ Do not catalog files or restate information evident from their names and locatio
 - Never let the workflow check out the `commit` input: its install step runs code of the checkout while the job can publish, and commits of forks are reachable by hash. The workflow runs at `GITHUB_SHA`, finishes only the release of the newest release commit on the remote base branch, and publishes only when `GITHUB_SHA` is that commit, since npm provenance names `GITHUB_SHA`.
 - Never dispatch the workflow while a run of it is in progress, and do not publish locally on `--resume` while one is in progress.
 - Disable npm provenance only for local publications; in the workflow, let trusted publishing decide.
-- Keep the npm trusted publishing rules independent of the CI provider, and put what is specific to GitHub Actions, such as repository URLs, OIDC variables, and `npm trust` options, into its `TrustedPublisher`.
-- After a local publication of packages that are new on npm, in a repository with the publishing workflow, offer to make them trust it with `npm trust`; the release is complete by then, so never fail it there.
+- Keep the npm trusted publishing rules independent of the CI provider, and put what is specific to GitHub Actions, such as repository URLs and OIDC variables, into its `TrustedPublisher`.
 - Check CI of the released commit, HEAD before versioning, only in the main release, not in `--resume`.
 - Ask for the release confirmation before `release:check` and the wait for CI, and create the release commit after them, only if the tree and the remote branch have not changed since the confirmation.
 - Between checks that take at least `presenceTimeout` and a publication, wait for the user with `waitForUser`, so that a missed npm 2FA does not fail a release whose commit is already pushed.
@@ -63,6 +62,7 @@ Do not catalog files or restate information evident from their names and locatio
 - `git ls-remote` lists the peeled `^{}` ref of an annotated tag only when it is requested explicitly.
 - npm trusted publishing identifies the publisher by the filename of the calling workflow, so the publishing workflow is a template that users copy, not a reusable workflow.
 - npm configures trusted publishers only for existing packages, generates provenance only from public repositories, and rejects provenance when `repository` of the package points elsewhere.
+- A new trusted publisher configuration expires unless it publishes within 2 days, so it cannot be set up right after the first local publication for a later release.
 - npm falls back to an npm token when trusted publishing fails.
 - A `workflow_dispatch` run uses the workflow file and `GITHUB_SHA` of the dispatched branch tip; re-running a run keeps its `GITHUB_SHA`.
 - `npm whoami` never uses trusted publishing, so its success means a token that npm would fall back to.

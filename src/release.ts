@@ -32,7 +32,7 @@ import {
   runtimeDependencyFields,
   type UnreleasedRangeChanges,
 } from "./dependencies"
-import { formatCommand, readCommand, runCommand } from "./exec"
+import { readCommand, runCommand } from "./exec"
 import {
   createTag,
   fetchRemote,
@@ -72,7 +72,6 @@ import {
   getNpmUser,
   isNpmjsRegistry,
   isVersionPublished,
-  listPublishedVersions,
 } from "./npm"
 import {
   formatReleaseSubject,
@@ -99,13 +98,7 @@ import {
   type RepoFileReader,
 } from "./project"
 import { compareVersions, isPrerelease } from "./semver"
-import {
-  assertTrustedPublishable,
-  assertTrustedPublishingEnvironment,
-  getTrustArgs,
-  hasNpmTrust,
-  minTrustNpmVersion,
-} from "./trusted-publishing"
+import { assertTrustedPublishable, assertTrustedPublishingEnvironment } from "./trusted-publishing"
 import {
   assertPublishWorkflowActive,
   dispatchPublication,
@@ -1434,81 +1427,6 @@ async function finishRelease(
     throw addResumeAdvice(workspace, state, error)
   }
   logDone(ctx, `Released ${formatVersions(state.packages)}.`)
-  if (workspace.publisher.mode === "local") {
-    await offerTrustedPublishing(ctx, workspace, state.packages)
-  }
-}
-
-/**
- * Lists the public packages of a release whose only version on npm is the released one, which npm has not had before the release.
- *
- * A just-published version that npm does not show yet counts as the released one.
- * Reading npm after the release also finds packages that an interrupted run published.
- */
-async function listNewPackages(ctx: Context, packages: PackageRelease[]) {
-  const publicPackages = packages.filter(entry => !entry.private)
-  const versions = await Promise.all(
-    publicPackages.map(entry => listPublishedVersions(ctx, entry.name)),
-  )
-  return publicPackages.filter((entry, index) =>
-    versions[index]!.every(version => version === entry.version),
-  )
-}
-
-/**
- * Offers to make the packages that a local release has published for the first time trust the publishing workflow with `npm trust`, when the repository has the workflow.
- *
- * The workflow cannot publish their next versions until they trust it, which npm allows only for existing packages.
- * Failures are reported as warnings because the release is already complete; a declined offer prints the commands to run.
- */
-async function offerTrustedPublishing(
-  ctx: Context,
-  workspace: Workspace,
-  packages: PackageRelease[],
-) {
-  let newPackages: PackageRelease[]
-  try {
-    newPackages = (await hasPublishWorkflow(getWorkTreeFiles(ctx.cwd).read))
-      ? await listNewPackages(ctx, packages)
-      : []
-  } catch (error) {
-    // Any failure, even an unexpected one, leaves the release complete.
-    logWarning(
-      ctx,
-      `Cannot check which packages are new on npm to configure their trusted publishing.\n${(error as Error).message}`,
-    )
-    return
-  }
-  if (newPackages.length === 0) {
-    return
-  }
-  const names = newPackages.map(entry => entry.name).join(", ")
-  const publisher = getPublishWorkflowPublisher(workspace.repo)
-  const argsList = newPackages.map(entry => getTrustArgs(publisher, entry.name))
-  const advice = `To let ${publishWorkflowFile} publish future versions of ${names}, run:\n${argsList.map(args => `  ${formatCommand("npm", args)}`).join("\n")}`
-  ctx.log("")
-  try {
-    if (!(await hasNpmTrust(ctx))) {
-      logWarning(ctx, `${advice}\nThis needs npm ${minTrustNpmVersion} or later.`)
-      return
-    }
-    if (
-      !(await ctx.confirm(
-        `Configure npm trusted publishing of ${names} with ${publishWorkflowFile}?`,
-      ))
-    ) {
-      logWarning(ctx, advice)
-      return
-    }
-    for (const args of argsList) {
-      // npm asks for a one-time password itself; `--yes` only skips its confirmation.
-      await runCommand(ctx, "npm", [...args, "--yes"])
-    }
-  } catch (error) {
-    logWarning(ctx, `${(error as Error).message}\n${advice}`)
-    return
-  }
-  logDone(ctx, `${names} ${newPackages.length === 1 ? "trusts" : "trust"} ${publishWorkflowFile}.`)
 }
 
 /** Runs a step after the release commit, adding to its failure how to finish the release. */
