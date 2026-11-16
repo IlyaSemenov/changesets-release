@@ -148,7 +148,7 @@ export function expectPackageReleased(fixture: Fixture, dir: string, version: st
 
 /** Creates a committed, pushed fixture project with pending changesets. */
 export function createFixture(options: FixtureOptions = {}): Fixture {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "changesets-local-test-")))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "changesets-release-test-")))
   const dir = join(root, "work")
   const remote = join(root, "remote.git")
   const stateDir = join(root, "state")

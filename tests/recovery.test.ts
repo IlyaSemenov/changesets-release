@@ -18,7 +18,7 @@ function countPublishAttempts(fixture: Fixture) {
 async function runInterrupted(fixture: Fixture, message: string) {
   const result = await fixture.run()
   expect(result.error?.message).toContain(message)
-  expect(result.error?.message).toContain("run `changesets-local --resume` to finish it")
+  expect(result.error?.message).toContain("run `changesets-release --resume` to finish it")
   expect(fixture.git("log", "-1", "--format=%s")).toBe("Release fixture-package@1.0.1")
   expect(fixture.git("status", "--porcelain")).toBe("")
 }
@@ -224,7 +224,7 @@ describe("failure after the release commit", () => {
     })
     const result = await fixture.run({ resume: true }, { waitForUser: () => false })
     expect(result.error?.message).toContain("Release cancelled.")
-    expect(result.error?.message).toContain("run `changesets-local --resume` to finish it")
+    expect(result.error?.message).toContain("run `changesets-release --resume` to finish it")
     expect(fixture.state().npm.publishes).toEqual([])
     await resume(fixture)
   })
@@ -274,7 +274,7 @@ describe("failure after the release commit", () => {
     expect(result.error?.message).toContain(
       'The release "Release fixture-package@1.0.1" is incomplete:',
     )
-    expect(result.error?.message).toContain("Run `changesets-local --resume` to finish it.")
+    expect(result.error?.message).toContain("Run `changesets-release --resume` to finish it.")
     expect(result.questions).toEqual([])
   })
 })

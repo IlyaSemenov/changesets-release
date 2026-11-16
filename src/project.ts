@@ -86,7 +86,7 @@ export async function readProject(files: RepoFiles): Promise<Project> {
     "package.json",
   )
   if (!packageJson) {
-    throw new ReleaseError("changesets-local requires package.json at the repository root.")
+    throw new ReleaseError("changesets-release requires package.json at the repository root.")
   }
   const conventions = await readReleaseConventions(files.read)
   if (!conventions.monorepo) {

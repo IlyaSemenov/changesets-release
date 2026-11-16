@@ -11,7 +11,7 @@ import { release } from "./release"
 /** Milliseconds that the terminal gets to deliver input typed before a prompt. */
 const pendingInputDrainTime = 50
 
-const help = `Usage: changesets-local [options]
+const help = `Usage: changesets-release [options]
 
 Release the packages of the repository in the current directory from pending changesets:
 version them, publish them to npm, push the release commit and tags, and create GitHub Releases.
@@ -20,7 +20,7 @@ Options:
   --dry-run      Show what a release would do without changing anything
   --resume       Finish an interrupted release
   -h, --help     Show this help
-  -v, --version  Show the changesets-local version`
+  -v, --version  Show the changesets-release version`
 
 /** Runs the command line interface. */
 async function main() {

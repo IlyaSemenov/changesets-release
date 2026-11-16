@@ -1,8 +1,8 @@
-# changesets-local Agent Guide
+# changesets-release Agent Guide
 
 ## Overview
 
-changesets-local is a CLI that releases a Changesets repository, a single package or a monorepo, from the terminal: it versions the packages, publishes them to npm, pushes the release commit and tags, and creates GitHub Releases.
+changesets-release is a CLI that releases a Changesets repository, a single package or a monorepo, from the terminal: it versions the packages, publishes them to npm, pushes the release commit and tags, and creates GitHub Releases.
 
 Read [README.md](README.md) completely before changing the command-line interface, package behavior, supported runtimes, or user documentation.
 
@@ -98,7 +98,7 @@ Do not catalog files or restate information evident from their names and locatio
 
 ```markdown
 ---
-"changesets-local": patch
+"changesets-release": patch
 ---
 
 Describe the user-visible change.

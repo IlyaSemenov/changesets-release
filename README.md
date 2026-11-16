@@ -1,15 +1,15 @@
-# changesets-local
+# changesets-release
 
 Release [Changesets](https://github.com/changesets/changesets) packages from your terminal with one command: version them, publish them to npm, push the release commit and tags, and create GitHub Releases.
 
 ```sh
-npx changesets-local
+npx changesets-release
 ```
 
 You keep writing `.changeset/*.md` files and choosing SemVer bumps as usual.
 Instead of the Changesets GitHub Action with its Version pull request and CI publishing, you release on demand from your machine, authenticating to npm interactively with 2FA.
 
-changesets-local is a thin layer over your project's own `@changesets/cli` 3:
+changesets-release is a thin layer over your project's own `@changesets/cli` 3:
 
 - `changeset version` bumps versions and writes changelogs.
 - `changeset publish` publishes to npm and creates the Git tags.
@@ -32,20 +32,20 @@ It checks Git, npm, and GitHub before publishing and can finish an interrupted r
 
 ## Install
 
-Add changesets-local to the dev dependencies at the repository root to pin its version for everyone who releases:
+Add changesets-release to the dev dependencies at the repository root to pin its version for everyone who releases:
 
 ```sh
-npm install --save-dev changesets-local
+npm install --save-dev changesets-release
 ```
 
-`npx changesets-local` runs the installed version; without it, npx downloads the latest version.
+`npx changesets-release` runs the installed version; without it, npx downloads the latest version.
 
 To release with a command that is easy to remember, add a `release` script to `package.json`:
 
 ```json
 {
   "scripts": {
-    "release": "changesets-local"
+    "release": "changesets-release"
   }
 }
 ```
@@ -64,15 +64,15 @@ git commit -m "Fix login redirect"
 git push
 ```
 
-When you want to release, commit your changes, check out the base branch from `.changeset/config.json`, sync it with its remote branch, and run changesets-local in the repository root:
+When you want to release, commit your changes, check out the base branch from `.changeset/config.json`, sync it with its remote branch, and run changesets-release in the repository root:
 
 ```sh
-npx changesets-local
+npx changesets-release
 ```
 
-When npm or the GitHub CLI is not logged in, changesets-local runs `npm login` or `gh auth login` first; complete the login in the terminal.
+When npm or the GitHub CLI is not logged in, changesets-release runs `npm login` or `gh auth login` first; complete the login in the terminal.
 
-changesets-local versions the packages and shows the release before asking for confirmation:
+changesets-release versions the packages and shows the release before asking for confirmation:
 
 ```text
 Release my-package@1.5.0
@@ -124,9 +124,9 @@ Press Enter to publish my-package@1.5.0 as alice, Ctrl+C to cancel.
 ```
 
 When npm asks for a one-time password or browser authentication, complete it in the terminal.
-changesets-local never asks for or stores passwords, one-time passwords, or tokens: npm and gh ask for them themselves.
+changesets-release never asks for or stores passwords, one-time passwords, or tokens: npm and gh ask for them themselves.
 
-If you decline, or versioning or `release:check` fails, changesets-local restores the working tree and nothing is committed.
+If you decline, or versioning or `release:check` fails, changesets-release restores the working tree and nothing is committed.
 Do not edit files while a release runs: the release also stops and restores the working tree when files or the remote branch change after the confirmation.
 Ctrl+C before the release commit does the same; after it, the release stops, and you [finish it](#finish-an-interrupted-release) with `--resume`.
 Press Ctrl+C again to exit at once without any cleanup.
@@ -134,7 +134,7 @@ Press Ctrl+C again to exit at once without any cleanup.
 To preview a release without changing anything, run:
 
 ```sh
-npx changesets-local --dry-run
+npx changesets-release --dry-run
 ```
 
 The dry run checks the repository and logins and shows the release notes, dependency ranges, changed files, and steps, but does not update the lockfile or run `release:check`.
@@ -170,7 +170,7 @@ Only packages with the Git tag of their current version are checked.
 The confirmation lists exactly what `changeset publish` will publish.
 If it would also publish a version outside the release, such as a new public package without a changeset, the release stops before the confirmation; release that package with a changeset or make it private.
 
-With npm or Bun, runtime dependencies between published packages (`dependencies`, `optionalDependencies`, and `peerDependencies`) must use version ranges such as `^1.2.0`: npm publishes `workspace:` and `catalog:` specifiers unchanged, and changesets-local stops when it finds them.
+With npm or Bun, runtime dependencies between published packages (`dependencies`, `optionalDependencies`, and `peerDependencies`) must use version ranges such as `^1.2.0`: npm publishes `workspace:` and `catalog:` specifiers unchanged, and changesets-release stops when it finds them.
 Only pnpm replaces them on publication.
 This does not apply to `devDependencies`.
 
@@ -178,11 +178,11 @@ This does not apply to `devDependencies`.
 
 Enter [Changesets prerelease mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) with `changeset pre enter <tag>` and release as usual.
 Changesets chooses the npm dist-tag of each version, usually the prerelease tag; check it in the confirmation.
-changesets-local marks the GitHub Releases of prerelease versions as prereleases.
+changesets-release marks the GitHub Releases of prerelease versions as prereleases.
 
 ## Check the release before publishing
 
-changesets-local [waits for CI](#wait-for-ci) of the commit you release, so keep linting, type checks, and tests in CI.
+changesets-release [waits for CI](#wait-for-ci) of the commit you release, so keep linting, type checks, and tests in CI.
 For checks that CI does not run, add a `release:check` script to the root `package.json`, such as a test that installs the packed packages at the versions and dependency ranges that Changesets has just written:
 
 ```json
@@ -196,7 +196,7 @@ For checks that CI does not run, add a `release:check` script to the root `packa
 Do not repeat in `release:check` the checks of CI that versioning cannot affect, such as linting and unit tests: they check the same code again and only delay the release.
 If your repository has no CI, run all your checks in `release:check` instead.
 
-changesets-local runs it with your package manager after you confirm the release, and again before publishing when it finishes an interrupted release.
+changesets-release runs it with your package manager after you confirm the release, and again before publishing when it finishes an interrupted release.
 The release stops if it fails.
 It must not change tracked files; add files it generates, such as `dist`, to `.gitignore`.
 
@@ -204,10 +204,10 @@ Build packages in their `prepack` or `prepublishOnly` scripts: npm runs them on 
 
 ## Wait for CI
 
-After you confirm a new release, changesets-local waits for the GitHub checks of the commit you release, such as GitHub Actions jobs and commit statuses.
+After you confirm a new release, changesets-release waits for the GitHub checks of the commit you release, such as GitHub Actions jobs and commit statuses.
 It does not wait for checks awaiting approval, such as a deployment to a protected environment.
 
-If a check fails, changesets-local lists the failed checks with their links and asks whether to release anyway; the default answer is no.
+If a check fails, changesets-release lists the failed checks with their links and asks whether to release anyway; the default answer is no.
 
 ## Finish an interrupted release
 
@@ -215,7 +215,7 @@ npm publication cannot be undone, but the steps after it can fail, for example w
 When a release fails after the release commit, fix the cause and run:
 
 ```sh
-npx changesets-local --resume
+npx changesets-release --resume
 ```
 
 `--resume` finds the newest release commit, checks the remote branch, npm, the remote tags, and the GitHub Releases of its packages, and shows what is done and what is left.
@@ -224,17 +224,17 @@ Combine it with `--dry-run` to see the state without changing anything.
 
 A release commit is a commit whose subject, such as `Release a@1.0.0, b@2.0.0`, lists exactly the package versions it changes, in any order, whoever made it.
 
-changesets-local never publishes a version that npm already has, overwrites a tag, or force-pushes.
+changesets-release never publishes a version that npm already has, overwrites a tag, or force-pushes.
 When the state is inconsistent, for example when a remote tag points to a different commit or a GitHub Release is a draft, it explains the problem and stops.
 
 A newly published version can be missing from the npm registry for several minutes while npm scans it.
 If a release stops because npm does not show a version it has accepted, wait a few minutes and resume.
 
 If a new release stops because the previous one is incomplete, resume that release first.
-If nothing of the incomplete release is on npm or tagged and you have reverted its release commit, changesets-local asks whether to abandon that release instead.
+If nothing of the incomplete release is on npm or tagged and you have reverted its release commit, changesets-release asks whether to abandon that release instead.
 Abandon it only if you are sure that npm did not accept any of its versions.
 
-## Why changesets-local
+## Why changesets-release
 
 With the [Changesets GitHub Action](https://github.com/changesets/action), a Version pull request collects the version updates, and merging it publishes from CI.
 For a library maintained by one or a few people, that is an extra pull request per release and publishing failures that you investigate in CI logs.
@@ -252,15 +252,15 @@ Keep the GitHub Action if you need [npm provenance](https://docs.npmjs.com/gener
 2. Remove `"provenance": true` from `publishConfig` of your packages, if present: npm can only generate provenance in a supported CI environment.
 3. Make sure `.changeset/config.json` has `"commit": false`.
 4. Close the open Version pull request, if there is one.
-5. Release with `npx changesets-local`.
+5. Release with `npx changesets-release`.
 
 Packages published locally have no [npm provenance attestations](https://docs.npmjs.com/generating-provenance-statements).
-changesets-local disables provenance for its publication, so a `provenance=true` setting in your `.npmrc` does not break it.
+changesets-release disables provenance for its publication, so a `provenance=true` setting in your `.npmrc` does not break it.
 
 ### Skip CI for release commits
 
-A release commit that changesets-local creates only versions the commit whose CI it has waited for: it updates versions, dependency ranges, changelogs, changesets, and the lockfile.
-changesets-local does not wait for CI of the release commit itself, so to save CI time, skip CI jobs for release commits with a job-level condition:
+A release commit that changesets-release creates only versions the commit whose CI it has waited for: it updates versions, dependency ranges, changelogs, changesets, and the lockfile.
+changesets-release does not wait for CI of the release commit itself, so to save CI time, skip CI jobs for release commits with a job-level condition:
 
 ```yaml
 jobs:
@@ -274,7 +274,7 @@ jobs:
 Use a job condition rather than `[skip ci]` in the commit message or a workflow-level filter.
 GitHub reports a skipped job as successful, while a workflow that does not run leaves required status checks of branch protection pending.
 
-The condition checks the last pushed commit, which is the release commit when changesets-local pushes it.
+The condition checks the last pushed commit, which is the release commit when changesets-release pushes it.
 It also skips other commits whose message starts with `Release `.
 
 ## Limitations

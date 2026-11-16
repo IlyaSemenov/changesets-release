@@ -1,5 +1,5 @@
 {
-  "name": "changesets-local",
+  "name": "changesets-release",
   "version": "1.6.0",
   "description": "Release Changesets packages and monorepos from your terminal, without a Version pull request or CI publishing.",
   "keywords": [
@@ -12,16 +12,16 @@
     "release",
     "semver"
   ],
-  "homepage": "https://github.com/IlyaSemenov/changesets-local#readme",
-  "bugs": "https://github.com/IlyaSemenov/changesets-local/issues",
+  "homepage": "https://github.com/IlyaSemenov/changesets-release#readme",
+  "bugs": "https://github.com/IlyaSemenov/changesets-release/issues",
   "license": "MIT",
   "author": "Ilya Semenov",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/IlyaSemenov/changesets-local.git"
+    "url": "git+https://github.com/IlyaSemenov/changesets-release.git"
   },
   "bin": {
-    "changesets-local": "./dist/cli.mjs"
+    "changesets-release": "./dist/cli.mjs"
   },
   "files": [
     "README.md",

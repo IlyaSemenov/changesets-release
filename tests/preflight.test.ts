@@ -53,7 +53,7 @@ describe("pending changes", () => {
 describe("repository state", () => {
   /** Pushes a commit to the remote from another clone. */
   function pushRemoteChange(fixture: Fixture) {
-    const clone = join(mkdtempSync(join(tmpdir(), "changesets-local-test-")), "clone")
+    const clone = join(mkdtempSync(join(tmpdir(), "changesets-release-test-")), "clone")
     fixture.git("clone", "--quiet", fixture.remote, clone)
     fixture.git("-C", clone, "commit", "--quiet", "--allow-empty", "--message", "Remote change")
     fixture.git("-C", clone, "push", "--quiet")

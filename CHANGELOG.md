@@ -1,4 +1,4 @@
-# changesets-local
+# changesets-release
 
 ## 1.6.0
 

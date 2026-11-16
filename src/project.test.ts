@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { getWorkTreeFiles } from "./project"
 
 describe("getWorkTreeFiles", () => {
-  const dir = mkdtempSync(join(tmpdir(), "changesets-local-test-"))
+  const dir = mkdtempSync(join(tmpdir(), "changesets-release-test-"))
   writeFileSync(join(dir, "package.json"), "{}")
   mkdirSync(join(dir, "folder"))
   const files = getWorkTreeFiles(dir)

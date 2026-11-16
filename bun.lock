@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "changesets-local",
+      "name": "changesets-release",
       "devDependencies": {
         "@changesets/cli": "^3.0.3",
         "@ilyasemenov/oxc-config": "^0.1.1",

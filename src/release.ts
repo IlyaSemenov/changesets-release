@@ -199,7 +199,7 @@ async function prepareWorkspace(ctx: Context, options: ReleaseOptions): Promise<
     throw new ReleaseError("The current directory is not in a Git repository.")
   }
   if ((await realpath(root)) !== (await realpath(ctx.cwd))) {
-    throw new ReleaseError(`Run changesets-local from the repository root: ${root}`)
+    throw new ReleaseError(`Run changesets-release from the repository root: ${root}`)
   }
   // A dry run previews the release of HEAD, so it reads the project as committed.
   const project = await readProject(
@@ -344,7 +344,7 @@ async function describeSyncProblem(ctx: Context, workspace: Workspace) {
 async function confirmAbandonment(ctx: Context, state: ReleaseState, options: ReleaseOptions) {
   if (!(await isApparentlyAbandoned(ctx, state))) {
     throw new ReleaseError(
-      `The release "${state.subject}" is incomplete:\n${formatState(state)}\nRun \`changesets-local --resume\` to finish it.`,
+      `The release "${state.subject}" is incomplete:\n${formatState(state)}\nRun \`changesets-release --resume\` to finish it.`,
     )
   }
   ctx.log(
@@ -523,7 +523,7 @@ async function createReleaseCommit(
   const changedPaths = await listChangedPaths(ctx)
   if (changedPaths.length > 0) {
     throw new ReleaseError(
-      `A Git hook changed files after the release commit:\n${formatList(changedPaths)}\nDiscard the changes and run \`changesets-local --resume\`.`,
+      `A Git hook changed files after the release commit:\n${formatList(changedPaths)}\nDiscard the changes and run \`changesets-release --resume\`.`,
     )
   }
   return { commit, subject, releases: committed }
@@ -821,7 +821,7 @@ async function restoreWorkTree(ctx: Context) {
 /** Shows the release that pending changesets would produce, versioning a temporary worktree instead of the project. */
 async function previewRelease(ctx: Context, workspace: Workspace, head: string) {
   logStep(ctx, "Versioning in a temporary worktree")
-  const tempDir = await mkdtemp(join(tmpdir(), "changesets-local-"))
+  const tempDir = await mkdtemp(join(tmpdir(), "changesets-release-"))
   const tree = join(tempDir, "tree")
   let summary: ReleaseSummary
   try {
@@ -979,7 +979,7 @@ async function inspectRelease(
     }
     if (entry.githubRelease === "draft") {
       throw new ReleaseError(
-        `The GitHub Release ${entry.tag} is a draft. Publish or delete it, then run changesets-local again.`,
+        `The GitHub Release ${entry.tag} is a draft. Publish or delete it, then run changesets-release again.`,
       )
     }
   }
@@ -1096,7 +1096,7 @@ async function finishRelease(
   } catch (error) {
     if (error instanceof ReleaseError) {
       throw new ReleaseError(
-        `${error.message}\n\nThe release "${state.subject}" is incomplete. Fix the problem and run \`changesets-local --resume\` to finish it.`,
+        `${error.message}\n\nThe release "${state.subject}" is incomplete. Fix the problem and run \`changesets-release --resume\` to finish it.`,
       )
     }
     throw error

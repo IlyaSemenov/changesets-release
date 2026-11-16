@@ -68,7 +68,7 @@ export async function assertChangesetsInstalled(ctx: Context) {
   const { version } = packageJson
   if (Number(version.split(".")[0]) !== supportedMajor) {
     throw new ReleaseError(
-      `@changesets/cli ${version} is installed; changesets-local requires version ${supportedMajor}.`,
+      `@changesets/cli ${version} is installed; changesets-release requires version ${supportedMajor}.`,
     )
   }
 }
@@ -98,7 +98,7 @@ export async function readPublishPlan(ctx: Context, cwd = ctx.cwd): Promise<Publ
 /**
  * Applies pending changesets: bumps versions and updates changelogs.
  *
- * Prints the output of Changesets, such as configuration warnings, without repeated lines and the lines that do not apply to a release by changesets-local.
+ * Prints the output of Changesets, such as configuration warnings, without repeated lines and the lines that do not apply to a release by changesets-release.
  */
 export async function applyChangesets(ctx: Context, cwd = ctx.cwd) {
   const args = ["version"]
@@ -113,7 +113,7 @@ export async function applyChangesets(ctx: Context, cwd = ctx.cwd) {
   }
 }
 
-/** Lines of `changeset version` output that changesets-local leaves out: the Changesets banner, and the advice to review and commit the changes, which changesets-local does itself. */
+/** Lines of `changeset version` output that changesets-release leaves out: the Changesets banner, and the advice to review and commit the changes, which changesets-release does itself. */
 const versionNoise = [/^\S*\s*changeset v\d/, /Review them and commit at your leisure/]
 
 /**
@@ -181,7 +181,7 @@ function isBumpType(type: string): type is PlannedRelease["type"] {
 }
 
 async function withTempFile<T>(name: string, callback: (path: string) => Promise<T>) {
-  const dir = await mkdtemp(join(tmpdir(), "changesets-local-"))
+  const dir = await mkdtemp(join(tmpdir(), "changesets-release-"))
   try {
     return await callback(join(dir, name))
   } finally {
