@@ -2,7 +2,7 @@
 
 ## Overview
 
-changesets-release is a CLI that releases a Changesets repository, a single package or a monorepo, from the terminal: it versions the packages, publishes them to npm, pushes the release commit and tags, and creates GitHub Releases.
+changesets-release is a CLI that releases a Changesets repository, a single package or a monorepo, from the terminal: it versions the packages and pushes the release commit, then publishes them to npm, pushes the tags, and creates GitHub Releases, either itself or through the publishing workflow on GitHub Actions, which runs `changesets-release ci <commit>` with npm trusted publishing.
 
 Read [README.md](README.md) completely before changing the command-line interface, package behavior, supported runtimes, or user documentation.
 
@@ -18,7 +18,7 @@ Do not catalog files or restate information evident from their names and locatio
 - Keep integration and package-boundary tests in `tests/`.
 - Name runtime tests `*.test.ts` and compile-only type tests `*.type-test.ts`.
 - Keep static multi-line test inputs and expected outputs, such as Markdown, in files under a `fixtures/` directory next to the tests that use them.
-- Treat the command-line options, the release commit subject `Release a@1.0.0, b@2.0.0`, the Changesets tag formats, the `release:check` script, and supported runtimes as public contracts.
+- Treat the command-line options, the `ci` command, the release commit subject `Release a@1.0.0, b@2.0.0`, the Changesets tag formats, the `release:check` script, the publishing workflow file `.github/workflows/publish.yml` with its `commit` input and the workflow template in README.md, and supported runtimes as public contracts.
 
 ## Architecture
 
@@ -32,7 +32,15 @@ Do not catalog files or restate information evident from their names and locatio
 - Decide that a release is complete only after `inspectRelease` has verified that its tags point to the release commit.
 - Push the release commit before publishing to npm, so that a published version always has its commit on the remote.
 - Run `assertPublishable` right before every `changeset publish`, not only before the confirmation: Git hooks and `--resume` can change what is published.
-- Check npm publish permissions once per run: before the confirmation, or before the push in `--resume`.
+- Check the publisher once per run with `assertPublisherAccess`: before the confirmation, or before the push or dispatch in `--resume`.
+- Publish from GitHub Actions by default when HEAD has the publishing workflow, detected by `hasPublishWorkflow`, and from the machine otherwise, unless `--publish` says otherwise; never fall back from one mode to the other, and put `--publish` into the advice to resume when it differs from the default.
+- In GitHub mode, end the local run with dispatching the workflow: never publish, tag, or create GitHub Releases locally, and treat following the run as a convenience that Ctrl+C stops without failing.
+- Run the same `inspectRelease` and `finishRelease` in the publishing workflow through `publishFromWorkflow`; do not implement release steps in the workflow template.
+- Never let the workflow check out the `commit` input: its install step runs code of the checkout while the job can publish, and commits of forks are reachable by hash. The workflow runs at `GITHUB_SHA`, finishes only the release of the newest release commit on the remote base branch, and publishes only when `GITHUB_SHA` is that commit, since npm provenance names `GITHUB_SHA`.
+- Never dispatch the workflow while a run of it is in progress, and do not publish locally on `--resume` while one is in progress.
+- Disable npm provenance only for local publications; in the workflow, let trusted publishing decide.
+- Keep the npm trusted publishing rules independent of the CI provider, and put what is specific to GitHub Actions, such as repository URLs, OIDC variables, and `npm trust` options, into its `TrustedPublisher`.
+- After a local publication of packages that are new on npm, in a repository with the publishing workflow, offer to make them trust it with `npm trust`; the release is complete by then, so never fail it there.
 - Check CI of the released commit, HEAD before versioning, only in the main release, not in `--resume`.
 - Ask for the release confirmation before `release:check` and the wait for CI, and create the release commit after them, only if the tree and the remote branch have not changed since the confirmation.
 - Between checks that take at least `presenceTimeout` and a publication, wait for the user with `waitForUser`, so that a missed npm 2FA does not fail a release whose commit is already pushed.
@@ -43,7 +51,7 @@ Do not catalog files or restate information evident from their names and locatio
 
 ## Gotchas
 
-- `publishConfig` in `package.json` overrides npm settings from environment variables, so `NPM_CONFIG_PROVENANCE=false` cannot disable `"provenance": true` there; `assertPublishable` rejects it instead.
+- `publishConfig` in `package.json` overrides npm settings from environment variables, so `NPM_CONFIG_PROVENANCE=false` cannot disable `"provenance": true` there; `assertPublishable` rejects it for a local publication instead.
 - Changesets publishes with pnpm in pnpm projects and with npm otherwise, including Bun; npm publishes `workspace:` and `catalog:` specifiers unchanged.
 - pnpm 11+ has its own settings, such as `pnpm_config_*` variables and `registries` in pnpm-workspace.yaml, which `npm config` does not see.
 - `changeset status --output` reports `changesets: []` not only for dependents of released packages but also for packages of `fixed` groups and on leaving prerelease mode.
@@ -53,6 +61,12 @@ Do not catalog files or restate information evident from their names and locatio
 - `CHANGESETS_OUTPUT` of `changeset publish` reports only `git-tag` events, written after successful publications and for tagged private packages; it does not report failed or skipped publications.
 - npm may report a just-published version as missing for several minutes, and then rejects publishing it again as already published.
 - `git ls-remote` lists the peeled `^{}` ref of an annotated tag only when it is requested explicitly.
+- npm trusted publishing identifies the publisher by the filename of the calling workflow, so the publishing workflow is a template that users copy, not a reusable workflow.
+- npm configures trusted publishers only for existing packages, generates provenance only from public repositories, and rejects provenance when `repository` of the package points elsewhere.
+- npm falls back to an npm token when trusted publishing fails.
+- A `workflow_dispatch` run uses the workflow file and `GITHUB_SHA` of the dispatched branch tip; re-running a run keeps its `GITHUB_SHA`.
+- `npm whoami` never uses trusted publishing, so its success means a token that npm would fall back to.
+- `gh api --jq` prints string results without JSON quotes; select objects to parse the output as JSON.
 
 ## Design
 
@@ -115,6 +129,7 @@ Describe the user-visible change.
 
 - Test release behavior with the fixtures from `tests/fixture.ts`: a temporary repository with a bare Git remote and fake npm, pnpm, and gh from `tests/fake-tool/` on a restricted PATH.
   Never let tests reach the real npm registry or GitHub; extend the fakes for every new npm, pnpm, or gh command.
+- Test the publishing workflow with `runWorkflow` of the fixture, which runs `publishFromWorkflow` in a new clone at the dispatched commit.
 - The `test` script runs tests concurrently: keep the state of each test in its own fixture, and do not change process-wide state such as `process.env` or the working directory.
 
 - Add a `describe` block where the file gives a reason for it: several APIs or behaviors in one file, or a fixture that belongs to some cases but not all.

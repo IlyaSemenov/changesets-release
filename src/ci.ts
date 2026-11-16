@@ -1,8 +1,7 @@
 // CI checks of the released commit: waiting for them before publishing and asking before releasing a commit whose CI has failed.
-import { setTimeout as sleep } from "node:timers/promises"
-
 import {
   type Context,
+  delay,
   formatList,
   logDetail,
   logDone,
@@ -204,15 +203,6 @@ function warnAboutApprovals(ctx: Context, commit: string, checks: CommitCheck[])
       ctx,
       `Not waiting for CI checks on ${commit.slice(0, 7)} that require approval: ${names}.`,
     )
-  }
-}
-
-/** Sleeps for a number of milliseconds, failing when the release is interrupted. */
-async function delay(ctx: Context, ms: number) {
-  try {
-    await sleep(ms, undefined, { signal: ctx.signal })
-  } catch (error) {
-    throw (error as Error).name === "AbortError" ? new ReleaseError("Interrupted.") : error
   }
 }
 

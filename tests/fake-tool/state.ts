@@ -19,13 +19,24 @@ export interface FakeState {
     distTags: Record<string, Record<string, string>>
     /** Published `name@version` entries that the registry does not show yet, as while npm scans a new version. */
     hidden: string[]
+    /** Users of npm tokens configured for npm and pnpm in the publishing workflow, which `whoami` reports there, or null without one. */
+    workflowUsers: { npm: string | null; pnpm: string | null }
+    /** Version that `npm --version` reports. */
+    cliVersion: string
+    /** Packages whose trusted publisher is the publishing workflow; only they can be published from GitHub Actions. */
+    trustedPublishers: string[]
+    /** Makes `npm trust github` fail. */
+    trustFailure: boolean
     /** Every publication that reached the registry. */
     publishes: Array<{
       tool: string
       name: string
       version: string
       tag: string
-      provenance: string | undefined
+      /** Whether the publication authenticated with trusted publishing instead of the npm login. */
+      trusted: boolean
+      /** Whether npm generated provenance: by default with trusted publishing, unless disabled. */
+      provenance: boolean
     }>
     /** Makes publications of packages fail before the upload or after the version is stored, by package name. */
     publishFailures: Record<string, "before-upload" | "after-upload">
@@ -42,6 +53,8 @@ export interface FakeState {
     /** Makes `gh repo view` fail as when GitHub is unreachable. */
     repoViewFailure: boolean
     repo: string
+    /** Whether the repository is private. */
+    private: boolean
     releases: Array<{
       tag: string
       title: string
@@ -77,6 +90,21 @@ export interface FakeState {
     } | null
     /** Number of requests for CI checks so far. */
     checkRequests: number
+    /** States of GitHub Actions workflows by file name, such as `active`; a missing workflow is unknown to GitHub. */
+    workflows: Record<string, string>
+    /** Runs of GitHub Actions workflows, oldest first; a run is in progress for `pendingReads` reads of it, then completes with `conclusion`. */
+    runs: Array<{
+      id: number
+      workflow: string
+      ref: string
+      /** The workflow run's commit: the tip of `ref` when it was dispatched. */
+      sha: string
+      inputs: Record<string, string>
+      pendingReads: number
+      conclusion: string
+    }>
+    /** Progress and result of the runs that `gh workflow run` creates. */
+    runOutcome: { pendingReads: number; conclusion: string }
   }
 }
 
@@ -91,6 +119,10 @@ export function createFakeState(): FakeState {
       versions: {},
       distTags: {},
       hidden: [],
+      workflowUsers: { npm: null, pnpm: null },
+      cliVersion: "11.16.0",
+      trustedPublishers: [],
+      trustFailure: false,
       publishes: [],
       publishFailures: {},
       maintainers: {},
@@ -101,12 +133,16 @@ export function createFakeState(): FakeState {
       loginFailure: false,
       repoViewFailure: false,
       repo: "owner/fixture",
+      private: false,
       releases: [],
       createFailure: false,
       checkRuns: {},
       statuses: {},
       checkRequestFailures: null,
       checkRequests: 0,
+      workflows: {},
+      runs: [],
+      runOutcome: { pendingReads: 0, conclusion: "success" },
     },
   }
 }

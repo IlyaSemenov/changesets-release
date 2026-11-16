@@ -6,26 +6,37 @@ import { parseArgs, styleText } from "node:util"
 import { version } from "../package.json"
 
 import { type Context, ReleaseError } from "./context"
-import { release } from "./release"
+import { publishFromWorkflow, type PublishMode, release } from "./release"
 
 /** Milliseconds that the terminal gets to deliver input typed before a prompt. */
 const pendingInputDrainTime = 50
 
 const help = `Usage: changesets-release [options]
+       changesets-release ci <commit>
 
 Release the packages of the repository in the current directory from pending changesets:
-version them, publish them to npm, push the release commit and tags, and create GitHub Releases.
+version them, push the release commit, publish them to npm, push the tags, and create GitHub Releases.
 
 Options:
-  --dry-run      Show what a release would do without changing anything
-  --resume       Finish an interrupted release
-  -h, --help     Show this help
-  -v, --version  Show the changesets-release version`
+  --publish <mode>  Where to publish: local, from this machine, or github, from the
+                    workflow .github/workflows/publish.yml; github when that workflow
+                    runs changesets-release ci, local otherwise
+  --dry-run         Show what a release would do without changing anything
+  --resume          Finish an interrupted release
+  -h, --help        Show this help
+  -v, --version     Show the changesets-release version
+
+Commands:
+  ci <commit>       Publish a pushed release commit; run by the publishing workflow`
+
+const publishModes: PublishMode[] = ["local", "github"]
 
 /** Runs the command line interface. */
 async function main() {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
     options: {
+      publish: { type: "string" },
       "dry-run": { type: "boolean" },
       resume: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -39,10 +50,6 @@ async function main() {
   if (values.version) {
     console.log(version)
     return
-  }
-
-  if (!values["dry-run"] && !process.stdin.isTTY) {
-    throw new ReleaseError("A release needs an interactive terminal.")
   }
 
   // Ctrl+C reaches subprocesses sharing the terminal; the release then fails and cleans up instead of exiting midway.
@@ -67,7 +74,38 @@ async function main() {
     confirm: question => askConfirmation(question, interrupt),
     waitForUser: message => waitForEnter(message, interrupt),
   }
-  await release(ctx, { dryRun: values["dry-run"], resume: values.resume })
+
+  if (positionals.length > 0) {
+    const [command, commit, ...rest] = positionals
+    if (command !== "ci" || commit === undefined || rest.length > 0) {
+      throw new ReleaseError(`Unexpected arguments: ${positionals.join(" ")}. See --help.`)
+    }
+    if (Object.keys(values).length > 0) {
+      throw new ReleaseError("`changesets-release ci` takes no options.")
+    }
+    await publishFromWorkflow(
+      {
+        ...ctx,
+        confirm: () => Promise.reject(new Error("The publishing workflow cannot ask questions.")),
+        waitForUser: () => Promise.reject(new Error("The publishing workflow cannot wait.")),
+      },
+      commit,
+    )
+    return
+  }
+
+  const publish = values.publish
+  if (publish !== undefined && !publishModes.includes(publish as PublishMode)) {
+    throw new ReleaseError(`--publish must be ${publishModes.join(" or ")}, not ${publish}.`)
+  }
+  if (!values["dry-run"] && !process.stdin.isTTY) {
+    throw new ReleaseError("A release needs an interactive terminal.")
+  }
+  await release(ctx, {
+    publish: publish as PublishMode | undefined,
+    dryRun: values["dry-run"],
+    resume: values.resume,
+  })
 }
 
 /** Asks a yes/no question in the terminal; Ctrl+C answers no. */

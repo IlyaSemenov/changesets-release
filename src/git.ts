@@ -96,6 +96,16 @@ export async function isAncestor(ctx: Context, commit: string, rev: string) {
   return result.code === 0
 }
 
+/** Checks whether the repository is a shallow clone, which lacks older commits. */
+export async function isShallowRepository(ctx: Context) {
+  return (await readCommand(ctx, "git", ["rev-parse", "--is-shallow-repository"])) === "true"
+}
+
+/** Checks whether Git has a committer identity configured, which annotated tags need. */
+export async function hasCommitterIdentity(ctx: Context) {
+  return Boolean(ctx.env.GIT_COMMITTER_EMAIL || (await readConfig(ctx, "user.email")))
+}
+
 /** Returns the subject line of a commit. */
 export function getCommitSubject(ctx: Context, rev: string) {
   return readCommand(ctx, "git", ["log", "-1", "--format=%s", rev])
@@ -107,10 +117,11 @@ export interface CommitInfo {
   subject: string
 }
 
-/** Lists non-merge commits reachable from HEAD whose subject starts with a prefix, newest first. */
+/** Lists non-merge commits reachable from a revision whose subject starts with a prefix, newest first. */
 export async function listCommitsBySubjectPrefix(
   ctx: Context,
   prefix: string,
+  rev: string,
 ): Promise<CommitInfo[]> {
   const output = await readCommand(ctx, "git", [
     "log",
@@ -118,7 +129,7 @@ export async function listCommitsBySubjectPrefix(
     "--fixed-strings",
     `--grep=${prefix}`,
     "--format=%H%x00%s",
-    "HEAD",
+    rev,
   ])
   return output
     .split("\n")

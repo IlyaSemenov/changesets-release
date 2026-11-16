@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises"
 import { styleText } from "node:util"
 
 /**
@@ -57,4 +58,13 @@ export function logDone(ctx: Context, text: string) {
 /** Prints a warning about a problem that does not stop the command. */
 export function logWarning(ctx: Context, text: string) {
   ctx.log(`${styleText("yellow", "⚠")} ${text}`)
+}
+
+/** Sleeps for a number of milliseconds, failing when the release is interrupted. */
+export async function delay(ctx: Context, ms: number) {
+  try {
+    await sleep(ms, undefined, { signal: ctx.signal })
+  } catch (error) {
+    throw (error as Error).name === "AbortError" ? new ReleaseError("Interrupted.") : error
+  }
 }

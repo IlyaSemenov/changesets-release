@@ -1,13 +1,14 @@
 {
   "name": "changesets-release",
   "version": "1.6.0",
-  "description": "Release Changesets packages and monorepos from your terminal, without a Version pull request or CI publishing.",
+  "description": "Release Changesets packages and monorepos on demand with one command, without a Version pull request: publish from your terminal or from GitHub Actions with npm provenance.",
   "keywords": [
     "changelog",
     "changesets",
     "cli",
     "monorepo",
     "npm",
+    "provenance",
     "publish",
     "release",
     "semver"

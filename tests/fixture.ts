@@ -16,7 +16,7 @@ import { stripVTControlCharacters } from "node:util"
 
 import { extractChangelogEntry } from "../src/changelog"
 import type { Context } from "../src/context"
-import { release, type ReleaseOptions } from "../src/release"
+import { publishFromWorkflow, release, type ReleaseOptions } from "../src/release"
 
 import { createFakeState, type FakeState, readFakeState, updateFakeState } from "./fake-tool/state"
 
@@ -49,6 +49,11 @@ export interface FixtureOptions {
   changesetsConfig?: Record<string, unknown>
   /** Enters Changesets prerelease mode with this tag. */
   preTag?: string
+  /**
+   * Sets up publishing from GitHub Actions: commits the publishing workflow, which GitHub knows as active, points the `repository` of the public packages to the GitHub repository, and publishes the single package at 1.0.0.
+   * Every public package trusts the publishing workflow.
+   */
+  github?: boolean
 }
 
 /** Output of a release run. */
@@ -103,7 +108,21 @@ export interface Fixture {
   removeTool: (tool: "npm" | "pnpm" | "gh") => void
   /** Makes the remote reject pushes of refs matching a shell pattern, or accept everything again with null. */
   rejectPushes: (pattern: string | null) => void
+  /**
+   * Runs the publishing workflow in a new clone of the remote, as GitHub Actions does.
+   * By default, runs the last dispatched run again: at the commit it was dispatched at, for its release commit.
+   * With `commit`, runs at the tip of main for that release commit, as a new dispatch does; `sha` sets the workflow run's commit.
+   * `env` adds or, with undefined values, removes variables of the workflow environment.
+   */
+  runWorkflow: (options?: {
+    commit?: string
+    sha?: string
+    env?: NodeJS.ProcessEnv
+  }) => Promise<RunResult>
 }
+
+/** GitHub repository of the fixtures. */
+export const githubRepo = "owner/fixture"
 
 /** Returns a shell command that changes top-level fields of a JSON file with Node.js. */
 export function createJsonEditCommand(path: string, fields: Record<string, unknown>) {
@@ -161,6 +180,15 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     for (const name of Object.values(monorepoPackages)) {
       initialState.npm.versions[name] = ["1.0.0"]
     }
+  }
+  if (options.github) {
+    initialState.gh.workflows["publish.yml"] = "active"
+    if (!options.monorepo) {
+      initialState.npm.versions[packageName] = ["1.0.0"]
+    }
+    initialState.npm.trustedPublishers = options.monorepo
+      ? Object.values(monorepoPackages)
+      : [packageName]
   }
   writeFileSync(join(stateDir, "state.json"), JSON.stringify(initialState))
   writeFileSync(join(stateDir, "calls.ndjson"), "")
@@ -226,6 +254,15 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
       writeJson(`${packageDir}/package.json`, {
         name,
         version: "1.0.0",
+        ...(options.github
+          ? {
+              repository: {
+                type: "git",
+                url: `git+https://github.com/${githubRepo}.git`,
+                directory: packageDir,
+              },
+            }
+          : {}),
         ...options.packages?.[packageDir],
       })
     }
@@ -240,6 +277,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     writeJson("package.json", {
       name: packageName,
       version: "1.0.0",
+      ...(options.github ? { repository: `https://github.com/${githubRepo}` } : {}),
       dependencies: { dep: "file:./vendor/dep" },
       ...options.packageJson,
     })
@@ -263,14 +301,13 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
   for (const [name, content] of Object.entries(options.changesets ?? defaultChangesets)) {
     write(`.changeset/${name}.md`, content)
   }
-  // Changesets resolves from the project dependencies; link the one installed in this repository.
-  mkdirSync(join(dir, "node_modules", "@changesets"), { recursive: true })
-  mkdirSync(join(dir, "node_modules", ".bin"))
-  symlinkSync(
-    join(repoRoot, "node_modules", "@changesets", "cli"),
-    join(dir, "node_modules", "@changesets", "cli"),
-  )
-  symlinkSync("../@changesets/cli/bin.js", join(dir, "node_modules", ".bin", "changeset"))
+  if (options.github) {
+    write(
+      ".github/workflows/publish.yml",
+      'name: Publish\njobs:\n  publish:\n    steps:\n      - run: npx --no changesets-release ci "$COMMIT"\n',
+    )
+  }
+  linkChangesets(dir)
   if (options.preTag) {
     exec(dir, join(dir, "node_modules", ".bin", "changeset"), "pre", "enter", options.preTag)
   }
@@ -295,6 +332,7 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
   git("push", "--quiet", "--set-upstream", "origin", "main")
 
   const state = () => readFakeState(stateDir)
+  let workflowRuns = 0
 
   return {
     dir,
@@ -359,6 +397,42 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
     installHook: (name, script) =>
       writeFileSync(join(dir, ".git", "hooks", name), `#!/bin/sh\n${script}\n`, { mode: 0o755 }),
     removeTool: tool => rmSync(join(binDir, tool)),
+    async runWorkflow({ commit, sha, env: workflowEnv } = {}) {
+      const workflowDir = join(root, `workflow-${++workflowRuns}`)
+      const lastRun = state().gh.runs.at(-1)
+      const target = commit ?? lastRun!.inputs.commit!
+      const runCommit =
+        sha ?? (commit === undefined ? lastRun!.sha : exec(remote, "git", "rev-parse", "main"))
+      exec(root, "git", "clone", "--quiet", remote, workflowDir)
+      exec(workflowDir, "git", "checkout", "--quiet", "--detach", runCommit)
+      linkChangesets(workflowDir)
+      const lines: string[] = []
+      const ctx: Context = {
+        cwd: workflowDir,
+        env: {
+          ...env,
+          GITHUB_ACTIONS: "true",
+          GITHUB_REPOSITORY: state().gh.repo,
+          GITHUB_REF: "refs/heads/main",
+          GITHUB_SHA: runCommit,
+          GH_TOKEN: "ghs_fake",
+          ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.actions.invalid",
+          ...workflowEnv,
+        },
+        interactive: false,
+        pollInterval: 0,
+        presenceTimeout: Infinity,
+        log: line => lines.push(stripVTControlCharacters(line)),
+        confirm: () => Promise.reject(new Error("The workflow asked a question.")),
+        waitForUser: () => Promise.reject(new Error("The workflow waited for the user.")),
+      }
+      try {
+        await publishFromWorkflow(ctx, target)
+        return { output: lines.join("\n"), questions: [], waits: [] }
+      } catch (error) {
+        return { output: lines.join("\n"), questions: [], waits: [], error: error as Error }
+      }
+    },
     rejectPushes(pattern) {
       const hook = join(remote, "hooks", "pre-receive")
       writeFileSync(
@@ -370,4 +444,15 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
       )
     },
   }
+}
+
+/** Links the Changesets CLI installed in this repository into a project, which resolves it from its dependencies. */
+function linkChangesets(dir: string) {
+  mkdirSync(join(dir, "node_modules", "@changesets"), { recursive: true })
+  mkdirSync(join(dir, "node_modules", ".bin"))
+  symlinkSync(
+    join(repoRoot, "node_modules", "@changesets", "cli"),
+    join(dir, "node_modules", "@changesets", "cli"),
+  )
+  symlinkSync("../@changesets/cli/bin.js", join(dir, "node_modules", ".bin", "changeset"))
 }

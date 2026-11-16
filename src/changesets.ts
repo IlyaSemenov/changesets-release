@@ -145,12 +145,18 @@ export function filterVersionOutput(output: string) {
  * Publishes unpublished package versions from the work tree with `changeset publish`, which also tags them.
  *
  * Resolves to the command status and the tags that Changesets reports creating: after successful publications, and for tagged private packages.
- * npm provenance is disabled because it can only be generated in CI.
+ * With `disableProvenance`, overrides npm settings that request provenance, which npm can only generate in CI; otherwise npm decides, and trusted publishing generates provenance for a public repository.
  */
-export async function publishPackages(ctx: Context) {
+export async function publishPackages(
+  ctx: Context,
+  { disableProvenance }: { disableProvenance: boolean },
+) {
   return withTempFile("output.ndjson", async output => {
     const result = await runCommandWithStatus(ctx, changesetBin, ["publish"], {
-      env: { CHANGESETS_OUTPUT: output, NPM_CONFIG_PROVENANCE: "false" },
+      env: {
+        CHANGESETS_OUTPUT: output,
+        ...(disableProvenance ? { NPM_CONFIG_PROVENANCE: "false" } : {}),
+      },
     })
     const events = await readOutputEvents(output)
     return {

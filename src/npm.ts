@@ -28,7 +28,7 @@ export async function getNpmUser(ctx: Context, { login }: { login: boolean }) {
 }
 
 /** Returns the npm user logged in to the registry, or `undefined` when npm needs a login; fails on other errors. */
-async function readNpmUser(ctx: Context) {
+export async function readNpmUser(ctx: Context) {
   const result = await captureCommand(ctx, "npm", ["whoami", "--json"])
   const output = parseJson(result.stdout)
   if (result.code === 0 && typeof output === "string") {
@@ -65,6 +65,32 @@ export async function isVersionPublished(ctx: Context, name: string, version: st
   }
   const reason = typeof error?.summary === "string" ? error.summary : result.stderr.trim()
   throw new ReleaseError(`Cannot check ${name}@${version} on npm: ${reason}`)
+}
+
+/**
+ * Lists the versions of a package on npm, or none when npm does not have the package.
+ *
+ * A just-published version may be missing for several minutes while npm scans it.
+ */
+export async function listPublishedVersions(ctx: Context, name: string): Promise<string[]> {
+  const result = await captureCommand(ctx, "npm", [
+    "view",
+    name,
+    "versions",
+    "--json",
+    "--prefer-online",
+  ])
+  const output = parseJson(result.stdout)
+  if (result.code === 0) {
+    // npm prints a single version as a string.
+    return typeof output === "string" ? [output] : (output as string[])
+  }
+  const error = (output as { error?: { code?: unknown; summary?: unknown } } | undefined)?.error
+  if (error?.code === "E404") {
+    return []
+  }
+  const reason = typeof error?.summary === "string" ? error.summary : result.stderr.trim()
+  throw new ReleaseError(`Cannot check ${name} on npm: ${reason}`)
 }
 
 /**

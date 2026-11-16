@@ -18,7 +18,14 @@ describe("release", () => {
     expect(existsSync(join(fixture.dir, ".changeset", "fix-bug.md"))).toBe(false)
     expect(fixture.git("rev-list", "--count", "HEAD")).toBe("2")
     expect(fixture.state().npm.publishes).toEqual([
-      { tool: "npm", name: packageName, version: "1.0.1", tag: "latest", provenance: "false" },
+      {
+        tool: "npm",
+        name: packageName,
+        version: "1.0.1",
+        tag: "latest",
+        trusted: false,
+        provenance: false,
+      },
     ])
     expect(fixture.state().gh.releases[0]!.prerelease).toBe(false)
     expect(fixture.calls("npm").filter(([command]) => command === "access")).toHaveLength(1)

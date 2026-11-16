@@ -12,6 +12,8 @@ export interface Manifest {
   version: string
   private?: boolean
   publishConfig?: Record<string, unknown>
+  /** Source repository: a URL or shorthand, or an object with `url`. */
+  repository?: unknown
   dependencies?: Record<string, string>
   optionalDependencies?: Record<string, string>
   peerDependencies?: Record<string, string>

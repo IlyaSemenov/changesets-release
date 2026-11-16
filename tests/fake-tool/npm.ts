@@ -26,13 +26,19 @@ const registryCommands: Record<string, FakeCommand> = {
 
 /** Registry commands that only npm has. */
 const npmCommands: Record<string, FakeCommand> = {
+  "--version": ({ state }) => console.log(state.npm.cliVersion),
   login,
   "access list": listCollaborators,
   "org ls": listOrgMembers,
+  "trust github": trustWorkflow,
 }
 
 function showUser(call: FakeCall) {
-  const { user, loggedOutError, whoamiFailure } = call.state.npm
+  const { loggedOutError, whoamiFailure } = call.state.npm
+  // The publishing workflow has its own npm settings.
+  const user = process.env.GITHUB_ACTIONS
+    ? call.state.npm.workflowUsers[call.tool as "npm" | "pnpm"]
+    : call.state.npm.user
   if (whoamiFailure) {
     registryError(call, "ECONNRESET", "request to https://registry.npmjs.org/-/whoami failed")
   }
@@ -45,7 +51,7 @@ function showUser(call: FakeCall) {
         : "This command requires you to be logged in to https://registry.npmjs.org/",
     )
   }
-  console.log(JSON.stringify(user))
+  console.log(call.args.includes("--json") ? JSON.stringify(user) : user)
 }
 
 function login({ state, stateDir }: FakeCall) {
@@ -68,7 +74,11 @@ function viewPackage(call: FakeCall) {
   )
   if (version === undefined && versions.length > 0) {
     const distTags = state.npm.distTags[name] ?? { latest: versions.at(-1)! }
-    console.log(JSON.stringify({ name, versions, "dist-tags": distTags }))
+    const info: Record<string, unknown> = { name, versions, "dist-tags": distTags }
+    // A field after the package selects it, as `npm view <package> versions` does; npm prints a single version as a string.
+    const field = call.args[2]
+    const value = field && field in info ? info[field] : info
+    console.log(JSON.stringify(Array.isArray(value) && value.length === 1 ? value[0] : value))
   } else if (version !== undefined && versions.includes(version)) {
     console.log(JSON.stringify(version))
   } else {
@@ -100,6 +110,33 @@ function listOrgMembers(call: FakeCall) {
   console.log(JSON.stringify(members.includes(user) ? { [user]: "developer" } : {}))
 }
 
+/** Makes a published package trust the publishing workflow of the fixture repository. */
+function trustWorkflow(call: FakeCall) {
+  const { args, state, stateDir } = call
+  const name = args[2]!
+  const option = (flag: string) => args[args.indexOf(flag) + 1]
+  if (
+    option("--repo") !== "owner/fixture" ||
+    option("--file") !== "publish.yml" ||
+    option("--env") !== "npm" ||
+    !args.includes("--allow-publish")
+  ) {
+    fail(`unexpected trusted publisher: ${args.join(" ")}`)
+  }
+  if (state.npm.trustFailure) {
+    registryError(call, "E403", "Two-factor authentication is required")
+  }
+  if (!state.npm.versions[name]?.length) {
+    registryError(call, "E404", `Not Found - ${name}`)
+  }
+  if (state.npm.trustedPublishers.includes(name)) {
+    registryError(call, "E409", `${name} already has a trusted publisher`)
+  }
+  updateFakeState(stateDir, current => {
+    current.npm.trustedPublishers.push(name)
+  })
+}
+
 function publish(call: FakeCall) {
   const { args, state, stateDir, tool } = call
   const { name, version } = JSON.parse(readFileSync("package.json", "utf8")) as {
@@ -107,6 +144,16 @@ function publish(call: FakeCall) {
     version: string
   }
   const failure = state.npm.publishFailures[name]
+  // npm authenticates with trusted publishing when GitHub Actions lets the job request an OIDC token.
+  const trusted = Boolean(process.env.ACTIONS_ID_TOKEN_REQUEST_URL)
+  if (trusted && !state.npm.trustedPublishers.includes(name)) {
+    registryError(
+      call,
+      "ENEEDAUTH",
+      "This command requires you to be logged in to https://registry.npmjs.org/",
+    )
+  }
+  const provenance = process.env.NPM_CONFIG_PROVENANCE
   let conflict = false
   if (failure !== "before-upload") {
     updateFakeState(stateDir, current => {
@@ -125,7 +172,8 @@ function publish(call: FakeCall) {
         name,
         version,
         tag,
-        provenance: process.env.NPM_CONFIG_PROVENANCE,
+        trusted,
+        provenance: trusted ? provenance !== "false" : provenance === "true",
       })
     })
   }

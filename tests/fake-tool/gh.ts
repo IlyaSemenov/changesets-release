@@ -31,7 +31,9 @@ const commands: Record<string, FakeCommand> = {
   "repo view": viewRepo,
   "api graphql": queryRelease,
   "api --paginate": listChecks,
+  api: readWorkflowApi,
   "release create": createRelease,
+  "workflow run": dispatchWorkflow,
 }
 
 function showToken({ state }: FakeCall) {
@@ -54,7 +56,13 @@ function viewRepo({ state }: FakeCall) {
   if (state.gh.repoViewFailure) {
     fail("error connecting to api.github.com")
   }
-  console.log(JSON.stringify({ nameWithOwner: state.gh.repo, viewerPermission: "ADMIN" }))
+  console.log(
+    JSON.stringify({
+      nameWithOwner: state.gh.repo,
+      viewerPermission: "ADMIN",
+      isPrivate: state.gh.private,
+    }),
+  )
 }
 
 function queryRelease({ args, state }: FakeCall) {
@@ -161,4 +169,85 @@ function createRelease({ args, state, stateDir }: FakeCall) {
   if (exists) {
     fail("a release with the same tag name already exists")
   }
+}
+
+/** Prints what the jq filter of the real command selects from the GitHub Actions API: a workflow state, the runs of a workflow, or one run. */
+function readWorkflowApi({ args, state, stateDir }: FakeCall) {
+  const endpoint = args[1]!
+  const prefix = `repos/${state.gh.repo}/actions/`
+  if (!endpoint.startsWith(prefix)) {
+    fail(`unexpected endpoint ${endpoint}`)
+  }
+  const path = endpoint.slice(prefix.length).split("?")[0]!
+  const workflowRuns = /^workflows\/([^/]+)\/runs$/.exec(path)
+  const workflow = /^workflows\/([^/]+)$/.exec(path)
+  const run = /^runs\/(\d+)$/.exec(path)
+  if (workflowRuns) {
+    if (!(workflowRuns[1]! in state.gh.workflows)) {
+      fail("gh: Not Found (HTTP 404)")
+    }
+    for (const entry of state.gh.runs
+      .filter(item => item.workflow === workflowRuns[1])
+      .toReversed()) {
+      console.log(JSON.stringify(formatRun(state, entry)))
+    }
+  } else if (workflow) {
+    const workflowState = state.gh.workflows[workflow[1]!] ?? fail("gh: Not Found (HTTP 404)")
+    console.log(JSON.stringify({ state: workflowState }))
+  } else if (run) {
+    let found: FakeState["gh"]["runs"][number] | undefined
+    updateFakeState(stateDir, current => {
+      const entry = current.gh.runs.find(item => item.id === Number(run[1]))
+      if (entry) {
+        found = { ...entry }
+        entry.pendingReads = Math.max(0, entry.pendingReads - 1)
+      }
+    })
+    console.log(JSON.stringify(formatRun(state, found ?? fail("gh: Not Found (HTTP 404)"))))
+  } else {
+    fail(`unexpected endpoint ${endpoint}`)
+  }
+}
+
+function formatRun(state: FakeState, run: FakeState["gh"]["runs"][number]) {
+  const completed = run.pendingReads === 0
+  return {
+    id: run.id,
+    status: completed ? "completed" : "in_progress",
+    conclusion: completed ? run.conclusion : null,
+    url: `https://github.com/${state.gh.repo}/actions/runs/${run.id}`,
+  }
+}
+
+function dispatchWorkflow({ args, state, stateDir }: FakeCall) {
+  const option = (name: string) => args[args.indexOf(name) + 1]!
+  const workflow = args[2]!
+  if (option("--repo") !== state.gh.repo) {
+    fail(`unexpected repository ${option("--repo")}`)
+  }
+  const workflowState =
+    state.gh.workflows[workflow] ??
+    fail(`could not find any workflows named ${workflow} (HTTP 404)`)
+  if (workflowState !== "active") {
+    fail(`could not create workflow dispatch event: HTTP 422: Workflow is disabled.`)
+  }
+  const inputs = Object.fromEntries(
+    args.flatMap((arg, index) =>
+      args[index - 1] === "-f" ? [arg.split("=", 2) as [string, string]] : [],
+    ),
+  )
+  const sha = spawnSync("git", ["rev-parse", option("--ref")], {
+    cwd: process.env.FAKE_REMOTE,
+    encoding: "utf8",
+  }).stdout.trim()
+  updateFakeState(stateDir, current => {
+    current.gh.runs.push({
+      id: current.gh.runs.length + 1,
+      workflow,
+      ref: option("--ref"),
+      sha,
+      inputs,
+      ...current.gh.runOutcome,
+    })
+  })
 }
