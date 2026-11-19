@@ -1,5 +1,15 @@
 # changesets-release
 
+## 2.1.1
+
+### Patch Changes
+
+- ca2b8ac: Fix an incorrect "release is incomplete" error when the CLI cannot read the workflow runs after dispatching the publishing workflow.
+- 2d89f96: Fix an incorrect "release is incomplete" error when you press Ctrl+C while the CLI is looking for the dispatched workflow run.
+- 86b915d: Fix releases failing on a brief network or GitHub server error while reading from GitHub, such as when looking for the dispatched publishing workflow run.
+- 1f10599: Fix a crash with `EPIPE` when creating a GitHub Release fails before `gh` reads the release notes.
+- 2df580e: Fix the CLI exiting with an error when it cannot read the status of a publishing workflow run it is following.
+
 ## 2.1.0
 
 ### Minor Changes
