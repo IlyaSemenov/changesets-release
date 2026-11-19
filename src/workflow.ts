@@ -84,7 +84,7 @@ export async function findActivePublishRun(ctx: Context, repo: string) {
  *
  * `versions` lists the package versions of the release, as its subject does, for the name of the run.
  * Fails without dispatching while a run is in progress, since it may be publishing the release, or when it cannot read the runs.
- * After the dispatch, prints why and returns null when GitHub does not list the run in time or reading the runs fails with a `ReleaseError`; interruptions propagate.
+ * After the dispatch, prints why and returns null when GitHub does not list the run in time, reading the runs fails with a `ReleaseError`, or Ctrl+C stops the lookup.
  */
 export async function dispatchPublication(
   ctx: Context,
@@ -111,17 +111,21 @@ export async function dispatchPublication(
       `${publishWorkflowPath} does not declare the \`versions\` input. Update it from the template in the changesets-release README to name runs after the released versions.`,
     )
   }
-  for (let attempt = 1; ; attempt++) {
-    let runs: WorkflowRun[]
-    try {
-      runs = await listWorkflowRuns(ctx, repo, publishWorkflowFile)
-    } catch (error) {
-      if (!(error instanceof ReleaseError) || ctx.signal?.aborted) {
-        throw error
-      }
-      logDetail(ctx, error.message)
-      return null
+  try {
+    return await findDispatchedRun(ctx, repo, previous)
+  } catch (error) {
+    if (!(error instanceof ReleaseError)) {
+      throw error
     }
+    logDetail(ctx, ctx.signal?.aborted ? "Stopped looking for the run." : error.message)
+    return null
+  }
+}
+
+/** Looks for the run of the publishing workflow that is not among `previous` runs, and returns null when GitHub does not list it in time. */
+async function findDispatchedRun(ctx: Context, repo: string, previous: Set<number>) {
+  for (let attempt = 1; ; attempt++) {
+    const runs = await listWorkflowRuns(ctx, repo, publishWorkflowFile)
     const run = runs.find(entry => !previous.has(entry.id))
     if (run) {
       return run
@@ -129,6 +133,9 @@ export async function dispatchPublication(
     if (attempt >= runLookupAttempts) {
       logDetail(ctx, "GitHub has not listed the run yet.")
       return null
+    }
+    if (attempt === 1) {
+      logDetail(ctx, "Waiting for GitHub to list the run")
     }
     await delay(ctx, Math.min(ctx.pollInterval, runLookupInterval))
   }

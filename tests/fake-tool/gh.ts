@@ -206,7 +206,7 @@ function readWorkflowApi({ args, state, stateDir }: FakeCall) {
       fail("gh: Not Found (HTTP 404)")
     }
     for (const entry of state.gh.runs
-      .filter(item => item.workflow === workflowRuns[1])
+      .filter(item => item.workflow === workflowRuns[1] && !item.omitFromRunList)
       .toReversed()) {
       console.log(JSON.stringify(formatRun(state, entry)))
     }

@@ -93,7 +93,10 @@ export interface FakeState {
     }>
     /** States of GitHub Actions workflows by file name, such as `active`; a missing workflow is unknown to GitHub. */
     workflows: Record<string, string>
-    /** Runs of GitHub Actions workflows, oldest first; a run is in progress for `pendingReads` reads of it, then completes with `conclusion`. */
+    /**
+     * Runs of GitHub Actions workflows, oldest first; a run is in progress for `pendingReads` reads of it, then completes with `conclusion`.
+     * Lists of runs omit a run with `omitFromRunList`.
+     */
     runs: Array<{
       id: number
       workflow: string
@@ -103,9 +106,10 @@ export interface FakeState {
       inputs: Record<string, string>
       pendingReads: number
       conclusion: string
+      omitFromRunList?: boolean
     }>
     /** Progress and result of the runs that `gh workflow run` creates. */
-    runOutcome: { pendingReads: number; conclusion: string }
+    runOutcome: { pendingReads: number; conclusion: string; omitFromRunList?: boolean }
   }
 }
 

@@ -162,6 +162,53 @@ describe("preparing a release for GitHub Actions", () => {
     expect(fixture.state().gh.runs).toHaveLength(1)
   })
 
+  it("stops retrying a failed run lookup on Ctrl+C without failing", async () => {
+    const fixture = createGitHubFixture()
+    // The first request lists the runs before the dispatch; Ctrl+C comes while the lookup after it waits to retry.
+    // HEAD gets a passed CI check, so that the release does not wait for GitHub to create checks.
+    fixture.updateState(state => {
+      state.gh.checkRuns[fixture.git("rev-parse", "HEAD")] = [
+        { name: "test", conclusion: "success" },
+      ]
+      state.gh.apiFailures.push({
+        endpoint: "publish.yml/runs",
+        after: 1,
+        count: 100,
+        error: "network",
+      })
+    })
+    const result = await fixture.run({}, { abortOnLog: "Retrying a GitHub request" })
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain(
+      "Stopped looking for the run.\n⚠ Dispatched publish.yml, but could not find its run.",
+    )
+    expect(fixture.state().gh.runs).toHaveLength(1)
+  })
+
+  it("stops waiting for GitHub to list the dispatched run on Ctrl+C without failing", async () => {
+    const fixture = createGitHubFixture()
+    fixture.updateState(state => {
+      state.gh.checkRuns[fixture.git("rev-parse", "HEAD")] = [
+        { name: "test", conclusion: "success" },
+      ]
+      state.gh.runOutcome = { pendingReads: 0, conclusion: "success", omitFromRunList: true }
+    })
+    const result = await fixture.run({}, { abortOnLog: "Waiting for GitHub to list the run" })
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain(
+      "Stopped looking for the run.\n⚠ Dispatched publish.yml, but could not find its run.",
+    )
+    // One list before the dispatch and one after it.
+    expect(
+      fixture
+        .calls("gh")
+        .filter(
+          ([command, endpoint]) => command === "api" && endpoint?.includes("publish.yml/runs"),
+        ),
+    ).toHaveLength(2)
+    expect(fixture.state().gh.runs).toHaveLength(1)
+  })
+
   it("fails without dispatching when it cannot read the runs before the dispatch", async () => {
     const fixture = createGitHubFixture()
     fixture.updateState(state => {
