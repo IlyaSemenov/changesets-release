@@ -231,6 +231,24 @@ describe("preparing a release for GitHub Actions", () => {
     expect(fixture.state().gh.runs).toHaveLength(1)
   })
 
+  it("stops waiting without failing when it cannot read the run", async () => {
+    const fixture = createGitHubFixture()
+    fixture.updateState(state => {
+      state.gh.runOutcome = { pendingReads: 2, conclusion: "success" }
+      state.gh.apiFailures.push({
+        endpoint: "/actions/runs/",
+        after: 0,
+        count: 100,
+        error: "network",
+      })
+    })
+    const result = await prepare(fixture)
+    expect(result.output).toMatch(
+      /failed with exit code 1\.\n.*connection reset by peer\n⚠ Cannot read the workflow run status\. Check the result on GitHub: https:\/\/github\.com\/.+\/actions\/runs\/1$/,
+    )
+    expect(result.output).not.toContain("is incomplete")
+  })
+
   it("does not wait for the user before dispatching", async () => {
     const fixture = createGitHubFixture({
       packageJson: { scripts: { "release:check": "exit 0" } },

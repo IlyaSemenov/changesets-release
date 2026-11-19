@@ -142,9 +142,9 @@ async function findDispatchedRun(ctx: Context, repo: string, previous: Set<numbe
 }
 
 /**
- * Waits until a run of the publishing workflow completes, and fails unless it succeeds.
+ * Waits until a run of the publishing workflow completes, and fails when it completes without success.
  *
- * Ctrl+C stops waiting without failing: the run continues on GitHub.
+ * Ctrl+C or a `ReleaseError` while reading the run stops waiting without failing, leaving the result to check on GitHub.
  */
 export async function watchPublishRun(ctx: Context, repo: string, run: WorkflowRun) {
   logStep(ctx, "Waiting for the publishing workflow")
@@ -160,12 +160,12 @@ export async function watchPublishRun(ctx: Context, repo: string, run: WorkflowR
       logWarning(ctx, `Stopped waiting. The workflow continues on GitHub: ${run.url}`)
       return
     }
-    if (error instanceof ReleaseError) {
-      throw new ReleaseError(
-        `Cannot follow the publishing workflow; it continues on GitHub: ${run.url}\n${error.message}`,
-      )
+    if (!(error instanceof ReleaseError)) {
+      throw error
     }
-    throw error
+    logDetail(ctx, error.message)
+    logWarning(ctx, `Cannot read the workflow run status. Check the result on GitHub: ${run.url}`)
+    return
   }
   if (current.conclusion !== "success") {
     throw new ReleaseError(
