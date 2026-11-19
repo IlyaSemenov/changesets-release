@@ -23,7 +23,8 @@ export interface CommandResult {
 /**
  * Runs a subprocess and captures its output.
  *
- * Resolves for any exit code; rejects only when the command cannot be started.
+ * Resolves with the exit status and output of the command once it exits, even when it closes its input early (EPIPE).
+ * Rejects when the command cannot be started, or when it exits with code 0 after another error of writing its input.
  */
 export function captureCommand(
   ctx: Context,
@@ -119,8 +120,20 @@ function spawnCommand(
           : error,
       )
     })
-    child.on("close", code => resolve({ code, stdout, stderr }))
+    // A failed write of the input is reported only once the command exits, with its exit code and output deciding first.
+    let inputError: NodeJS.ErrnoException | null = null
+    child.on("close", code => {
+      // A command may exit without reading its input, such as when it fails early, which makes the write fail with EPIPE.
+      if (code === 0 && inputError && inputError.code !== "EPIPE") {
+        reject(inputError)
+      } else {
+        resolve({ code, stdout, stderr })
+      }
+    })
     if (child.stdin) {
+      child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+        inputError ??= error
+      })
       child.stdin.end(options.input ?? "")
     }
   })
