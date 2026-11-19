@@ -289,7 +289,7 @@ describe("CI checks", () => {
   it("warns and releases when the token cannot access CI checks", async () => {
     const fixture = createFixture()
     fixture.updateState(state => {
-      state.gh.checkRequestFailures = { after: 0, count: 100, error: "no-access" }
+      state.gh.apiFailures.push({ endpoint: "/commits/", after: 0, count: 100, error: "no-access" })
     })
     const head = fixture.git("rev-parse", "--short=7", "HEAD")
     const result = await fixture.run()
@@ -302,12 +302,12 @@ describe("CI checks", () => {
 
   it("retries the first read of the checks after a network failure instead of skipping them", async () => {
     const fixture = createFixture()
-    const short = setChecks(fixture, { runs: [{ name: "test", conclusion: "failure" }] })
+    setChecks(fixture, { runs: [{ name: "test", conclusion: "failure" }] })
     fixture.updateState(state => {
-      state.gh.checkRequestFailures = { after: 0, count: 1, error: "network" }
+      state.gh.apiFailures.push({ endpoint: "/commits/", after: 0, count: 1, error: "network" })
     })
     const result = await fixture.run({}, { confirm: false })
-    expect(result.output).toContain(`Cannot read CI checks on ${short}; retrying.`)
+    expect(result.output).toContain("Retrying a GitHub request: Get ")
     expect(result.output).not.toContain("skipping them")
     expect(result.questions).toEqual(["Release despite the failed CI?"])
   })
@@ -319,11 +319,11 @@ describe("CI checks", () => {
     })
     // Each read requests check runs and statuses; the early read and the first read of the wait succeed.
     fixture.updateState(state => {
-      state.gh.checkRequestFailures = { after: 4, count: 2, error: "network" }
+      state.gh.apiFailures.push({ endpoint: "/commits/", after: 4, count: 2, error: "network" })
     })
     const result = await fixture.run()
     expect(result.error).toBeUndefined()
-    expect(result.output).toContain(`Cannot read CI checks on ${short}; retrying.`)
+    expect(result.output).toContain("Retrying a GitHub request: Get ")
     expect(result.output).toContain(`✔ CI passed on ${short}`)
     expectReleased(fixture, "1.0.1")
   })
@@ -334,15 +334,14 @@ describe("CI checks", () => {
       runs: [{ name: "test", conclusion: "success", pendingReads: 3 }],
     })
     fixture.updateState(state => {
-      state.gh.checkRequestFailures = { after: 4, count: 100, error: "network" }
+      state.gh.apiFailures.push({ endpoint: "/commits/", after: 4, count: 100, error: "network" })
     })
     const result = await fixture.run()
     expect(result.error?.message).toMatch(
-      new RegExp(
-        `^Cannot read CI checks on ${short} after 3 attempts\\.\n.*connection reset by peer`,
-        "s",
-      ),
+      new RegExp(`^Cannot read CI checks on ${short}\\.\n.*connection reset by peer`, "s"),
     )
+    // Four successful requests, then three attempts of the failing one.
+    expect(fixture.state().gh.apiFailures[0]!.requests).toBe(7)
     expect(result.questions).toEqual([`Release ${packageName}@1.0.1?`])
     expect(fixture.git("status", "--porcelain", "--untracked-files=all")).toBe("")
     expect(fixture.state().npm.publishes).toEqual([])
@@ -354,7 +353,7 @@ describe("CI checks", () => {
       runs: [{ name: "test", conclusion: "success", pendingReads: 3 }],
     })
     fixture.updateState(state => {
-      state.gh.checkRequestFailures = { after: 4, count: 100, error: "no-access" }
+      state.gh.apiFailures.push({ endpoint: "/commits/", after: 4, count: 100, error: "no-access" })
     })
     const result = await fixture.run()
     expect(result.error?.message).toMatch(
@@ -367,15 +366,18 @@ describe("CI checks", () => {
     const fixture = createFixture()
     const short = setChecks(fixture, { runs: [{ name: "test", conclusion: "failure" }] })
     fixture.updateState(state => {
-      state.gh.checkRequestFailures = { after: 0, count: 100, error: "rate-limit" }
+      state.gh.apiFailures.push({
+        endpoint: "/commits/",
+        after: 0,
+        count: 100,
+        error: "rate-limit",
+      })
     })
     const result = await fixture.run()
     expect(result.error?.message).toMatch(
-      new RegExp(
-        `^Cannot read CI checks on ${short} after 3 attempts\\.\n.*API rate limit exceeded`,
-        "s",
-      ),
+      new RegExp(`^Cannot read CI checks on ${short}\\.\n.*API rate limit exceeded`, "s"),
     )
+    expect(result.output).not.toContain("Retrying a GitHub request")
     expect(result.output).not.toContain("skipping them")
     expect(result.questions).toEqual([])
   })

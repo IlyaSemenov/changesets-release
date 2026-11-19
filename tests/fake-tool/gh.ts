@@ -15,9 +15,43 @@ export function runGh(call: FakeCall) {
   if (!call.state.gh.authenticated) {
     fail("To get started with GitHub CLI, please run:  gh auth login", 4)
   }
+  if (call.args[0] === "api") {
+    failApiRequest(call)
+  }
   const command =
     findCommand(commands, call.args) ?? fail(`unsupported fake gh command: ${call.args.join(" ")}`)
   command(call)
+}
+
+/** Fails the request when a matching `apiFailures` rule calls for it. */
+function failApiRequest({ args, state, stateDir }: FakeCall) {
+  const endpoint = args.slice(1).find(arg => !arg.startsWith("-"))!
+  if (!state.gh.apiFailures.some(failure => endpoint.includes(failure.endpoint))) {
+    return
+  }
+  let error: FakeState["gh"]["apiFailures"][number]["error"] | null = null
+  updateFakeState(stateDir, current => {
+    for (const failure of current.gh.apiFailures) {
+      if (!endpoint.includes(failure.endpoint)) {
+        continue
+      }
+      const request = failure.requests ?? 0
+      failure.requests = request + 1
+      if (request >= failure.after && request < failure.after + failure.count) {
+        error ??= failure.error
+      }
+    }
+  })
+  if (error === "network") {
+    const method = endpoint === "graphql" ? "Post" : "Get"
+    fail(`${method} "https://api.github.com/${endpoint}": read: connection reset by peer`)
+  } else if (error === "server") {
+    fail("gh: Server Error (HTTP 502)")
+  } else if (error === "no-access") {
+    fail("gh: Resource not accessible by personal access token (HTTP 403)")
+  } else if (error === "rate-limit") {
+    fail("gh: API rate limit exceeded for user ID 1. (HTTP 403)")
+  }
 }
 
 /** Commands that work without a login. */
@@ -80,21 +114,6 @@ function listChecks({ args, state, stateDir }: FakeCall) {
   const match = /^repos\/(.+)\/commits\/(\w+)\/(check-runs|status)\?/.exec(args[2]!)
   if (!match || match[1] !== state.gh.repo) {
     fail(`unexpected endpoint ${args[2]}`)
-  }
-  let failure: NonNullable<FakeState["gh"]["checkRequestFailures"]>["error"] | null = null
-  updateFakeState(stateDir, current => {
-    const failures = current.gh.checkRequestFailures
-    const request = current.gh.checkRequests++
-    if (failures && request >= failures.after && request < failures.after + failures.count) {
-      failure = failures.error
-    }
-  })
-  if (failure === "network") {
-    fail(`Get "https://api.github.com/${args[2]}": read: connection reset by peer`)
-  } else if (failure === "no-access") {
-    fail("gh: Resource not accessible by personal access token (HTTP 403)")
-  } else if (failure === "rate-limit") {
-    fail("gh: API rate limit exceeded for user ID 1. (HTTP 403)")
   }
   const [, , commit, endpoint] = match
   const items: unknown[] = []

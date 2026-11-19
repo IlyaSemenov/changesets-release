@@ -15,9 +15,6 @@ import { type CommitCheck, GitHubAccessError, listCommitChecks } from "./github"
 /** Poll intervals after the first read in which GitHub may still be creating the check runs of a just pushed commit. */
 const checkCreationPolls = 2
 
-/** Attempts to read CI checks before a failure other than missing access stops the release. */
-const maxReadAttempts = 3
-
 /** A commit whose CI must be checked again before the release commit. */
 export interface PendingChecks {
   commit: string
@@ -131,13 +128,14 @@ export async function previewChecks(ctx: Context, repo: string, commit: string) 
  * Lists the CI checks of a commit for the first time, or warns and returns null when the token cannot access them.
  *
  * A token without access to checks or statuses must not block releases, as a repository without CI does not.
+ * Other failures, such as persistent network errors, stop the release: skipping readable checks could release a commit whose CI fails.
  */
 async function readChecks(ctx: Context, repo: string, commit: string) {
   try {
-    return await readChecksWithRetries(ctx, repo, commit)
+    return await listCommitChecks(ctx, repo, commit)
   } catch (error) {
     if (!(error instanceof GitHubAccessError)) {
-      throw error
+      throw describeReadFailure(ctx, commit, error)
     }
     logWarning(
       ctx,
@@ -150,42 +148,18 @@ async function readChecks(ctx: Context, repo: string, commit: string) {
 /** Lists the CI checks of a commit that were read before, failing instead of skipping them when the token has lost access. */
 async function rereadChecks(ctx: Context, repo: string, commit: string) {
   try {
-    return await readChecksWithRetries(ctx, repo, commit)
+    return await listCommitChecks(ctx, repo, commit)
   } catch (error) {
-    if (!(error instanceof GitHubAccessError)) {
-      throw error
-    }
-    throw new ReleaseError(`Cannot read CI checks on ${commit.slice(0, 7)}.\n${error.message}`)
+    throw describeReadFailure(ctx, commit, error)
   }
 }
 
-/**
- * Lists the CI checks of a commit, retrying a read that fails for a reason other than missing access, such as a network error, after a poll interval.
- *
- * Fails after `maxReadAttempts` failed reads in a row: skipping readable checks could release a commit whose CI fails.
- */
-async function readChecksWithRetries(ctx: Context, repo: string, commit: string) {
-  const short = commit.slice(0, 7)
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await listCommitChecks(ctx, repo, commit)
-    } catch (error) {
-      if (
-        !(error instanceof ReleaseError) ||
-        error instanceof GitHubAccessError ||
-        ctx.signal?.aborted
-      ) {
-        throw error
-      }
-      if (attempt >= maxReadAttempts) {
-        throw new ReleaseError(
-          `Cannot read CI checks on ${short} after ${maxReadAttempts} attempts.\n${error.message}`,
-        )
-      }
-      logDetail(ctx, `Cannot read CI checks on ${short}; retrying.`)
-      await delay(ctx, ctx.pollInterval)
-    }
+/** Names the commit in a failure to read its CI checks; returns interruptions and unexpected errors unchanged. */
+function describeReadFailure(ctx: Context, commit: string, error: unknown) {
+  if (!(error instanceof ReleaseError) || ctx.signal?.aborted) {
+    return error
   }
+  return new ReleaseError(`Cannot read CI checks on ${commit.slice(0, 7)}.\n${error.message}`)
 }
 
 /** Asks whether to release a commit despite its failed checks, and fails when the user declines. */

@@ -80,14 +80,17 @@ export interface FakeState {
     >
     /** Commit statuses by commit; a status reports `pending` for `pendingReads` reads. */
     statuses: Record<string, Array<{ context: string; state: string; pendingReads?: number }>>
-    /** Makes `count` requests for CI checks fail with `error` after the first `after` requests. */
-    checkRequestFailures: {
+    /**
+     * Failures of `gh api` requests to endpoints that contain `endpoint`, such as `/check-runs` or `graphql`.
+     * Each rule skips the first `after` matching requests, then fails the next `count` with `error`; `requests` counts the matching requests so far.
+     */
+    apiFailures: Array<{
+      endpoint: string
       after: number
       count: number
-      error: "network" | "no-access" | "rate-limit"
-    } | null
-    /** Number of requests for CI checks so far. */
-    checkRequests: number
+      error: "network" | "server" | "no-access" | "rate-limit"
+      requests?: number
+    }>
     /** States of GitHub Actions workflows by file name, such as `active`; a missing workflow is unknown to GitHub. */
     workflows: Record<string, string>
     /** Runs of GitHub Actions workflows, oldest first; a run is in progress for `pendingReads` reads of it, then completes with `conclusion`. */
@@ -135,8 +138,7 @@ export function createFakeState(): FakeState {
       createFailure: false,
       checkRuns: {},
       statuses: {},
-      checkRequestFailures: null,
-      checkRequests: 0,
+      apiFailures: [],
       workflows: {},
       runs: [],
       runOutcome: { pendingReads: 0, conclusion: "success" },

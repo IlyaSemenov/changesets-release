@@ -124,6 +124,22 @@ describe("preparing a release for GitHub Actions", () => {
     expect(result.output).toContain("The publishing workflow succeeded")
   })
 
+  it("finds the dispatched run after a network failure", async () => {
+    const fixture = createGitHubFixture()
+    // The first request lists the runs before the dispatch, and the second looks for the dispatched run.
+    fixture.updateState(state => {
+      state.gh.apiFailures.push({
+        endpoint: "publish.yml/runs",
+        after: 1,
+        count: 1,
+        error: "network",
+      })
+    })
+    const result = await prepare(fixture)
+    expect(result.output).toContain("Retrying a GitHub request: Get ")
+    expect(result.output).toContain("The publishing workflow succeeded")
+  })
+
   it("stops waiting on Ctrl+C while the workflow continues", async () => {
     const fixture = createGitHubFixture()
     const result = await prepareRunning(fixture)

@@ -1,5 +1,5 @@
-import { type Context, logWarning, ReleaseError } from "./context"
-import { captureCommand, describeFailure, readCommand, runCommand } from "./exec"
+import { type Context, delay, logDetail, logWarning, ReleaseError } from "./context"
+import { captureCommand, type CommandResult, describeFailure, runCommand } from "./exec"
 
 /** Arguments that select github.com, the only supported GitHub host, even when gh defaults to an Enterprise host. */
 const githubHostArgs = ["--hostname", "github.com"]
@@ -19,7 +19,7 @@ export async function resolveGitHubRepo(
   { login }: { login: boolean },
 ): Promise<GitHubRepo> {
   const args = ["repo", "view", remoteUrl, "--json", "nameWithOwner,viewerPermission,isPrivate"]
-  let result = await captureCommand(ctx, "gh", args)
+  let result = await captureGitHubRead(ctx, args)
   // Only a missing token is fixed by logging in; other failures, such as an unreachable GitHub or a remote outside GitHub, are reported.
   // `gh auth token` checks only the github.com token, unlike `gh auth status`, which validates every account and fails when GitHub is unreachable.
   if (
@@ -29,7 +29,7 @@ export async function resolveGitHubRepo(
   ) {
     logWarning(ctx, "GitHub CLI is not logged in.")
     await runCommand(ctx, "gh", ["auth", "login", ...githubHostArgs])
-    result = await captureCommand(ctx, "gh", args)
+    result = await captureGitHubRead(ctx, args)
   }
   if (result.code !== 0) {
     throw new ReleaseError(
@@ -92,7 +92,7 @@ export async function getGitHubReleaseState(
   const [owner, name] = repo.split("/")
   const query =
     "query($owner: String!, $name: String!, $tag: String!) { repository(owner: $owner, name: $name) { release(tagName: $tag) { isDraft } } }"
-  const output = await readCommand(ctx, "gh", [
+  const args = [
     "api",
     "graphql",
     "-f",
@@ -103,8 +103,12 @@ export async function getGitHubReleaseState(
     `name=${name}`,
     "-f",
     `tag=${tag}`,
-  ])
-  const response = JSON.parse(output) as {
+  ]
+  const result = await captureGitHubRead(ctx, args)
+  if (result.code !== 0) {
+    throw new ReleaseError(describeFailure("gh", args, result))
+  }
+  const response = JSON.parse(result.stdout) as {
     data: { repository: { release: { isDraft: boolean } | null } }
   }
   const release = response.data.repository.release
@@ -326,7 +330,7 @@ export class GitHubAccessError extends ReleaseError {
 /**
  * Reads a GitHub REST API resource, or every page of a list with `paginate`, and returns the values that a jq filter selects.
  *
- * Fails with `GitHubAccessError` when GitHub refuses access with 403 or 404, and with `ReleaseError` on other failures, such as network errors and exceeded rate limits.
+ * Fails with `GitHubAccessError` when gh reports that GitHub refused access with 403 or 404, and with `ReleaseError` on other failures, such as persistent network errors, exceeded rate limits, and refusals whose status gh does not report.
  */
 async function readJsonLines<T>(
   ctx: Context,
@@ -335,9 +339,9 @@ async function readJsonLines<T>(
   { paginate = false } = {},
 ) {
   const args = ["api", ...(paginate ? ["--paginate"] : []), endpoint, "--jq", filter]
-  const result = await captureCommand(ctx, "gh", args)
+  const result = await captureGitHubRead(ctx, args)
   if (result.code !== 0) {
-    // `gh api` reports HTTP errors as `gh: <message> (HTTP <status>)`; GitHub also answers 403 when a rate limit is exceeded.
+    // Look for `(HTTP <status>)` in the error output of gh; GitHub also answers 403 when a rate limit is exceeded.
     const status = /\(HTTP (40[34])\)/.exec(result.stderr)?.[1]
     const message = describeFailure("gh", args, result)
     if (status && !/rate limit/i.test(result.stderr)) {
@@ -349,4 +353,50 @@ async function readJsonLines<T>(
     .split("\n")
     .filter(Boolean)
     .map(line => JSON.parse(line) as T)
+}
+
+/** Maximum number of attempts for a GitHub read. */
+const readAttempts = 3
+
+/** Longest pause between attempts of a GitHub read, in milliseconds. */
+const readRetryInterval = 3_000
+
+/**
+ * Runs a gh command that only reads from GitHub, and captures its output.
+ *
+ * Retries temporary failures and returns the result of the last attempt.
+ * Commands that change something must not use it: a dropped connection does not prove that GitHub did not apply the change.
+ */
+async function captureGitHubRead(ctx: Context, args: string[]): Promise<CommandResult> {
+  for (let attempt = 1; ; attempt++) {
+    const result = await captureCommand(ctx, "gh", args)
+    if (attempt >= readAttempts || !isTemporaryGitHubFailure(result)) {
+      return result
+    }
+    logDetail(ctx, `Retrying a GitHub request: ${result.stderr.trim().split("\n")[0]}`)
+    await delay(ctx, Math.min(ctx.pollInterval, readRetryInterval))
+  }
+}
+
+/**
+ * Checks whether a failed gh command may succeed when run again: any failure with exit code 1 that is not a recognized refusal.
+ *
+ * Unrecognized failures count as temporary because gh may hide what happened.
+ * With `--jq`, it reports an error page that is not JSON as a JSON parse error, without the HTTP status.
+ * When the connection drops while gh reads the body, its error output may contain only `unexpected EOF`.
+ * Recognized refusals are:
+ * - an HTTP 4xx status in the error output, such as `(HTTP 404)`;
+ * - an exceeded rate limit, which `gh api graphql` reports without a status;
+ * - a repository that does not exist, which gh commands other than `gh api` report as `GraphQL: Could not resolve to a Repository`;
+ * - a malformed token, which fails before the request is sent.
+ * A missing login, for which gh exits with code 4, and an interruption are not temporary either.
+ */
+export function isTemporaryGitHubFailure({ code, stderr }: CommandResult) {
+  return (
+    code === 1 &&
+    !/\bHTTP 4\d\d\b/.test(stderr) &&
+    !/rate limit/i.test(stderr) &&
+    !/^GraphQL: Could not resolve to /m.test(stderr) &&
+    !/: net\/http: invalid header field value/.test(stderr)
+  )
 }
