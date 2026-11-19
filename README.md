@@ -201,7 +201,7 @@ Steps:
     - Create GitHub Release in alice/my-package: v1.5.0
 ```
 
-changesets-release then shows the link to the workflow run and waits for it to finish.
+When changesets-release finds the workflow run, it shows the link and waits for the run to finish.
 The release no longer depends on your machine once the workflow has started: you can press Ctrl+C or close the terminal, and the workflow continues.
 
 Provenance links each published version to the workflow run and the commit it was built from, so that users can verify where a package comes from.

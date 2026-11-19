@@ -140,6 +140,43 @@ describe("preparing a release for GitHub Actions", () => {
     expect(result.output).toContain("The publishing workflow succeeded")
   })
 
+  it("warns without failing when it cannot find the dispatched run", async () => {
+    const fixture = createGitHubFixture()
+    // The first request lists the runs before the dispatch; the lookups after it fail.
+    fixture.updateState(state => {
+      state.gh.apiFailures.push({
+        endpoint: "publish.yml/runs",
+        after: 1,
+        count: 100,
+        error: "network",
+      })
+    })
+    const result = await prepare(fixture)
+    expect(result.output).toMatch(
+      /failed with exit code 1\.\n.*connection reset by peer\n⚠ Dispatched publish\.yml, but could not find its run\./,
+    )
+    expect(result.output).toContain(
+      `Check the workflow runs at https://github.com/${githubRepo}/actions/workflows/publish.yml`,
+    )
+    expect(result.output).not.toContain("is incomplete")
+    expect(fixture.state().gh.runs).toHaveLength(1)
+  })
+
+  it("fails without dispatching when it cannot read the runs before the dispatch", async () => {
+    const fixture = createGitHubFixture()
+    fixture.updateState(state => {
+      state.gh.apiFailures.push({
+        endpoint: "publish.yml/runs",
+        after: 0,
+        count: 100,
+        error: "network",
+      })
+    })
+    const result = await fixture.run()
+    expect(result.error?.message).toContain("connection reset by peer")
+    expect(listDispatchFields(fixture)).toEqual([])
+  })
+
   it("stops waiting on Ctrl+C while the workflow continues", async () => {
     const fixture = createGitHubFixture()
     const result = await prepareRunning(fixture)

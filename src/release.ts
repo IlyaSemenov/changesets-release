@@ -1076,7 +1076,7 @@ async function publishOnGitHub(ctx: Context, workspace: Workspace, state: Releas
   if (!run) {
     logWarning(
       ctx,
-      `GitHub has not listed the run yet. Follow it on ${getPublishWorkflowUrl(repo)}`,
+      `Dispatched ${publishWorkflowFile}, but could not find its run. Check the workflow runs at ${getPublishWorkflowUrl(repo)}`,
     )
     return
   }

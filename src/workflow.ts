@@ -80,11 +80,11 @@ export async function findActivePublishRun(ctx: Context, repo: string) {
 }
 
 /**
- * Dispatches the publishing workflow for a release commit on a branch, and returns its run, or null when GitHub does not list it in time.
+ * Dispatches the publishing workflow for a release commit on a branch, and returns its run, the one that was not listed before the dispatch.
  *
  * `versions` lists the package versions of the release, as its subject does, for the name of the run.
- * Fails without dispatching while a run is in progress, since it may be publishing the release.
- * The run is the one that was not listed before the dispatch.
+ * Fails without dispatching while a run is in progress, since it may be publishing the release, or when it cannot read the runs.
+ * After the dispatch, prints why and returns null when GitHub does not list the run in time or reading the runs fails with a `ReleaseError`; interruptions propagate.
  */
 export async function dispatchPublication(
   ctx: Context,
@@ -112,12 +112,22 @@ export async function dispatchPublication(
     )
   }
   for (let attempt = 1; ; attempt++) {
-    const runs = await listWorkflowRuns(ctx, repo, publishWorkflowFile)
+    let runs: WorkflowRun[]
+    try {
+      runs = await listWorkflowRuns(ctx, repo, publishWorkflowFile)
+    } catch (error) {
+      if (!(error instanceof ReleaseError) || ctx.signal?.aborted) {
+        throw error
+      }
+      logDetail(ctx, error.message)
+      return null
+    }
     const run = runs.find(entry => !previous.has(entry.id))
     if (run) {
       return run
     }
     if (attempt >= runLookupAttempts) {
+      logDetail(ctx, "GitHub has not listed the run yet.")
       return null
     }
     await delay(ctx, Math.min(ctx.pollInterval, runLookupInterval))
