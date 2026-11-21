@@ -1,5 +1,15 @@
 # changesets-release
 
+## 2.2.0
+
+### Minor Changes
+
+- e0dfabd: Add `--only <package>` to release some packages of a monorepo and leave the changesets of the others pending, and suggest it when a new package must be published from your machine.
+
+### Patch Changes
+
+- c9295ee: Fix local `--resume` advice when HEAD has moved past a release commit that is missing from the remote branch.
+
 ## 2.1.1
 
 ### Patch Changes
