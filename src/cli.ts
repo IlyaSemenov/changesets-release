@@ -21,6 +21,9 @@ Options:
   --publish <mode>  Where to publish: local, from this machine, or github, from the
                     workflow .github/workflows/publish.yml; github when that workflow
                     runs changesets-release ci, local otherwise
+  --only <package>  Release only this package, with the packages that Changesets
+                    also bumps, and leave the other changesets pending; repeat
+                    for several
   --dry-run         Show what a release would do without changing anything
   --resume          Finish an interrupted release
   -h, --help        Show this help
@@ -37,6 +40,7 @@ async function main() {
     allowPositionals: true,
     options: {
       publish: { type: "string" },
+      only: { type: "string", multiple: true },
       "dry-run": { type: "boolean" },
       resume: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -105,6 +109,7 @@ async function main() {
     publish: publish as PublishMode | undefined,
     dryRun: values["dry-run"],
     resume: values.resume,
+    only: values.only,
   })
 }
 

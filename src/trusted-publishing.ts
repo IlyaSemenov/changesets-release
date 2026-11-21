@@ -27,6 +27,7 @@ const minNpmVersion = "11.5.1"
  * Fails unless a trusted publisher can publish public packages.
  *
  * Each package must already be on npm: npm configures a trusted publisher only for an existing package.
+ * `adviseFirstPublication` supplies recovery advice for packages that have never been published.
  * When npm generates `provenance`, the `repository` of each package must point to the source repository, or npm rejects the publication.
  * `read` reads files of the released tree, by their paths from the repository root.
  */
@@ -35,16 +36,21 @@ export async function assertTrustedPublishable(
   publisher: TrustedPublisher,
   packages: PackageRelease[],
   read: RepoFileReader,
-  { provenance }: { provenance: boolean },
+  {
+    provenance,
+    adviseFirstPublication,
+  }: { provenance: boolean; adviseFirstPublication: (unpublished: string[]) => string },
 ) {
   const publicPackages = packages.filter(entry => !entry.private)
   const versions = await Promise.all(
     publicPackages.map(entry => listPublishedVersions(ctx, entry.name)),
   )
-  const unpublished = publicPackages.find((_, index) => versions[index]!.length === 0)
-  if (unpublished) {
+  const unpublished = publicPackages
+    .filter((_, index) => versions[index]!.length === 0)
+    .map(entry => entry.name)
+  if (unpublished.length > 0) {
     throw new ReleaseError(
-      `${unpublished.name} is not on npm yet, and npm can only trust a publisher of an existing package. Release with \`--publish=local\` to publish its first version, and configure its trusted publisher right before its next release.`,
+      `${unpublished.join(", ")} ${unpublished.length === 1 ? "is" : "are"} not on npm yet, and npm can only trust a publisher of an existing package. ${adviseFirstPublication(unpublished)}`,
     )
   }
   if (!provenance) {

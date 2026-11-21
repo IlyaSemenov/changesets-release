@@ -147,7 +147,7 @@ When you are on the base branch and it is in sync with its remote branch, it als
 
 ### Monorepos
 
-In a monorepo, one release commit releases every package that the pending changesets version, such as `Release @acme/core@2.1.0, @acme/react@1.4.0`.
+By default, a monorepo release includes every package that the pending changesets version in one release commit, such as `Release @acme/core@2.1.0, @acme/react@1.4.0`.
 Each published package gets a `name@version` tag and its own GitHub Release with the notes from its `CHANGELOG.md`.
 Private packages are not published; they are tagged and get GitHub Releases only when `privatePackages.tag` is enabled in the Changesets config.
 
@@ -177,6 +177,18 @@ If it would also publish a version outside the release, such as a new public pac
 With npm or Bun, runtime dependencies between published packages (`dependencies`, `optionalDependencies`, and `peerDependencies`) must use version ranges such as `^1.2.0`: npm publishes `workspace:` and `catalog:` specifiers unchanged, and changesets-release stops when it finds them.
 Only pnpm replaces them on publication.
 This does not apply to `devDependencies`.
+
+### Release some of the packages
+
+To release some packages of a monorepo and leave the changesets of the others for a later release, name the packages with `--only`:
+
+```sh
+npx changesets-release --only @acme/core
+```
+
+Repeat `--only` for several packages.
+The release also includes the packages that Changesets bumps along with them, such as packages that depend on a released one; check them in the confirmation.
+If a changeset also bumps another package, split the changeset or include that package with another `--only`.
 
 ### Prereleases
 
@@ -300,6 +312,13 @@ npx changesets-release --publish=local
 
 Then [configure trusted publishing](#configure-trusted-publishing) of the package right before its next release, and release as usual.
 In a monorepo, do this whenever a release has a new package: changesets-release stops before the confirmation when a package of the release is not on npm yet.
+To publish the other packages from GitHub Actions, first [release the new package with `--only`](#release-some-of-the-packages):
+
+```sh
+npx changesets-release --publish=local --only @acme/new-package
+```
+
+The confirmation lists the packages that this release publishes from your machine, including those that Changesets also bumps.
 
 ### Choose where to publish
 
@@ -417,3 +436,4 @@ It also skips other commits whose message starts with `Release `.
 - Only repositories on github.com and the public npm registry are supported; GitHub Enterprise Server is not.
 - npm trusted publishing does not support self-hosted runners.
 - The repository must have no other release automation that publishes the same versions.
+- `--only` does not work in Changesets prerelease mode.

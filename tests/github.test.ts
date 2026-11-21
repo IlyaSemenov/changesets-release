@@ -355,9 +355,86 @@ describe("preparing a release for GitHub Actions", () => {
       fixture.updateState(state => {
         state.npm.versions = {}
       })
-      const message = await runRejected(fixture)
-      expect(message).toContain(`${packageName} is not on npm yet`)
-      expect(message).toContain("Release with `--publish=local` to publish its first version")
+      expect(await runRejected(fixture)).toBe(
+        `${packageName} is not on npm yet, and npm can only trust a publisher of an existing package. Publish its first version from your machine with \`changesets-release --publish=local\`, and configure its trusted publisher right before its next release.`,
+      )
+    })
+
+    it("suggests a local release limited to packages that are new to npm", async () => {
+      const fixture = createGitHubFixture({ monorepo: true })
+      fixture.updateState(state => {
+        state.npm.versions["@fixture/beta"] = []
+      })
+      expect(await runRejected(fixture)).toContain(
+        "Publish its first version from your machine with `changesets-release --publish=local --only @fixture/beta`, check in its confirmation which packages it publishes, and configure its trusted publisher right before its next release.",
+      )
+    })
+
+    it.each([{ dryRun: false }, { dryRun: true }])(
+      "keeps --only in the advice when every package of the release is new to npm with %o",
+      async options => {
+        const fixture = createGitHubFixture({
+          monorepo: true,
+          changesetsConfig: { fixed: [["alpha", "@fixture/beta"]] },
+          changesets: { fix: changeset("patch", "Fix alpha.", ["alpha"]) },
+        })
+        fixture.updateState(state => {
+          state.npm.versions["alpha"] = []
+          state.npm.versions["@fixture/beta"] = []
+        })
+        const result = await fixture.run({ ...options, only: ["alpha"] })
+        expect(result.error?.message).toBe(
+          "alpha, @fixture/beta are not on npm yet, and npm can only trust a publisher of an existing package. Publish their first versions from your machine with `changesets-release --publish=local --only alpha`, and configure their trusted publishers right before their next releases.",
+        )
+      },
+    )
+
+    describe("when the advice keeps the changesets of the release", () => {
+      const advice =
+        "Release from your machine with `changesets-release --publish=local`, which publishes every public package of this release from there, and configure its trusted publisher right before its next release; `--only` cannot select it alone without changing which changesets this release applies."
+      const dependency = { "packages/beta": { dependencies: { alpha: "^1.0.0" } } }
+
+      it.each([
+        [
+          "bumped only as a dependent",
+          {
+            packages: dependency,
+            changesets: { breaking: changeset("major", "Break.", ["alpha"]) },
+          },
+        ],
+        [
+          "with a changeset that also bumps another package",
+          { changesets: { fix: changeset("patch", "Fix both.", ["alpha", "@fixture/beta"]) } },
+        ],
+        ["in prerelease mode", { preTag: "next" }],
+      ] as const)(
+        "advises to release everything from the machine for a package %s",
+        async (_, options) => {
+          const fixture = createGitHubFixture({ monorepo: true, ...options })
+          fixture.updateState(state => {
+            state.npm.versions["@fixture/beta"] = []
+          })
+          expect(await runRejected(fixture)).toContain(advice)
+        },
+      )
+
+      it("does not advise a changeset that the release defers", async () => {
+        const fixture = createGitHubFixture({
+          monorepo: true,
+          packages: dependency,
+          changesets: {
+            breaking: changeset("major", "Break.", ["alpha"]),
+            feature: changeset("minor", "Add a feature.", ["@fixture/beta"]),
+          },
+        })
+        fixture.updateState(state => {
+          state.npm.versions["@fixture/beta"] = []
+        })
+        const result = await fixture.run({ only: ["alpha"] })
+        expect(result.error?.message).toContain(
+          advice.replace("--publish=local`", "--publish=local --only alpha`"),
+        )
+      })
     })
 
     it("fails when a package points to another repository", async () => {
@@ -744,6 +821,21 @@ describe("resuming a release published from GitHub Actions", () => {
     expect(fixture.state().gh.runs).toMatchObject([
       { inputs: { commit: fixture.git("rev-parse", "HEAD") } },
     ])
+  })
+
+  it("advises to finish the release from the machine when a package is new to npm", async () => {
+    const fixture = createGitHubFixture()
+    fixture.rejectPushes("refs/heads/*")
+    expect((await fixture.run()).error?.message).toContain("`git push origin")
+    fixture.rejectPushes(null)
+    fixture.updateState(state => {
+      state.npm.versions = {}
+    })
+    const result = await fixture.run({ resume: true })
+    expect(result.error?.message).toContain(
+      "When HEAD is at the release commit, finish the release from your machine with `changesets-release --resume --publish=local`, and configure its trusted publisher right before its next release.",
+    )
+    expect(fixture.state().gh.runs).toEqual([])
   })
 
   it("pushes the release commit when the push failed", async () => {

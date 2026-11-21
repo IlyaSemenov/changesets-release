@@ -27,6 +27,7 @@ Do not catalog files or restate information evident from their names and locatio
 - Delegate versioning, changelog generation, npm publication, and tag creation to the project's own `@changesets/cli` instead of reimplementing them; only create tags that are missing at an existing release commit, as Changesets would.
 - Derive release progress from Git, npm, and GitHub in `inspectRelease`; do not persist release state.
 - Identify a release by its commit: the newest commit whose subject lists exactly the package versions it changes, in any order. Derive package directories from the `package.json` files that Git reports changed; do not discover workspaces.
+- Release some of the packages with `--only` by hiding the deferred changeset files from Changesets around `changeset status` and `changeset version`; do not use `changeset version --ignore`.
 - Find packages outside a release from the tracked `package.json` files, of the work tree or the release commit, and keep those that have the tag of their current version; do not parse `workspaces` or `pnpm-workspace.yaml`.
 - Keep every step after the release commit idempotent and skipped when `inspectRelease` reports it done, so that `--resume` and the main release run the same `finishRelease`.
 - Decide that a release is complete only after `inspectRelease` has verified that its tags point to the release commit.

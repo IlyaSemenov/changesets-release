@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 
 import {
   changeset,
@@ -19,6 +21,10 @@ function expectMonorepoReleased(fixture: Fixture) {
   expect(fixture.remoteGit("rev-parse", "main")).toBe(fixture.git("rev-parse", "HEAD"))
   expectPackageReleased(fixture, "packages/alpha", "1.1.0")
   expectPackageReleased(fixture, "packages/beta", "1.0.1")
+}
+
+function readFixture(name: string) {
+  return readFileSync(join(import.meta.dir, "fixtures", name), "utf8")
 }
 
 /** Changes top-level fields of a package manifest in a pushed commit; undefined removes a field. */
@@ -299,6 +305,106 @@ describe("monorepo release with dependent packages", () => {
     expect((await fixture.run({ resume: true })).error).toBeUndefined()
     expectPackageReleased(fixture, "packages/alpha", "2.0.0")
     expectPackageReleased(fixture, "packages/beta", "1.0.1")
+  })
+})
+
+describe("release of some packages", () => {
+  it("releases the given package and leaves the changesets of the others pending", async () => {
+    const fixture = createFixture({ monorepo: true })
+    const result = await fixture.run({ only: ["alpha"] })
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual(["Release alpha@1.1.0?"])
+    expect(result.output).toContain("Pending changesets of @fixture/beta stay for a later release.")
+    expectPackageReleased(fixture, "packages/alpha", "1.1.0")
+    expect(fixture.state().npm.publishes.map(entry => entry.name)).toEqual(["alpha"])
+    expect(fixture.git("status", "--porcelain", "--untracked-files=all")).toBe("")
+    expect(fixture.git("ls-files", ".changeset/*.md")).toBe(".changeset/fix.md")
+
+    expect((await fixture.run()).error).toBeUndefined()
+    expect(fixture.git("log", "-1", "--format=%s")).toBe("Release @fixture/beta@1.0.1")
+  })
+
+  it("shows the release in a dry run", async () => {
+    const fixture = createFixture({ monorepo: true })
+    const result = await fixture.run({ dryRun: true, only: ["@fixture/beta"] })
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain("Release @fixture/beta@1.0.1\n  @fixture/beta 1.0.0 → 1.0.1")
+    expect(result.output).toContain("Pending changesets of alpha stay for a later release.")
+    expect(fixture.git("status", "--porcelain", "--untracked-files=all")).toBe("")
+  })
+
+  it("releases a dependent package that Changesets also bumps", async () => {
+    const fixture = createFixture({
+      monorepo: true,
+      packageManager: "pnpm",
+      packages: { "packages/beta": { dependencies: { alpha: "workspace:^1.0.0" } } },
+      changesets: {
+        breaking: changeset("major", "Change the API.", ["alpha"]),
+        feature: changeset("minor", "Add a feature.", ["@fixture/beta"]),
+      },
+    })
+    const result = await fixture.run({ only: ["alpha"] })
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain(
+      "  @fixture/beta 1.0.0 → 1.0.1 (patch, no changeset: depends on alpha@2.0.0)\n",
+    )
+    expectPackageReleased(fixture, "packages/alpha", "2.0.0")
+    expectPackageReleased(fixture, "packages/beta", "1.0.1")
+    expect(fixture.git("ls-files", ".changeset/*.md")).toBe(".changeset/feature.md")
+  })
+
+  it("applies a mixed patch/none changeset and defers a none-only changeset", async () => {
+    const fixture = createFixture({
+      monorepo: true,
+      changesets: {
+        fix: readFixture("alpha-patch-beta-none.md"),
+        note: readFixture("beta-none.md"),
+      },
+    })
+    const result = await fixture.run({ only: ["alpha"] })
+    expect(result.error).toBeUndefined()
+    expectPackageReleased(fixture, "packages/alpha", "1.0.1")
+    expect(fixture.git("ls-files", ".changeset/*.md")).toBe(".changeset/note.md")
+  })
+
+  it("stops when a changeset of the package also bumps another package", async () => {
+    const fixture = createFixture({
+      monorepo: true,
+      changesets: { fix: changeset("patch", "Fix both.", ["alpha", "@fixture/beta"]) },
+    })
+    const result = await fixture.run({ only: ["alpha"] })
+    expect(result.error?.message).toBe(
+      ".changeset/fix.md also bumps @fixture/beta. Add `--only @fixture/beta` or split the changeset.",
+    )
+    expect(result.questions).toEqual([])
+    expect(fixture.git("status", "--porcelain", "--untracked-files=all")).toBe("")
+  })
+
+  it("stops when Changesets plans no release of the package", async () => {
+    const fixture = createFixture({
+      monorepo: true,
+      changesetsConfig: { ignore: ["@fixture/beta"] },
+    })
+    const result = await fixture.run({ only: ["alpha", "@fixture/beta"] })
+    expect(result.error?.message).toBe(
+      "Changesets plans no release of @fixture/beta despite pending changesets; check `ignore` and `privatePackages` in .changeset/config.json.",
+    )
+    expect(result.questions).toEqual([])
+    expect(fixture.git("status", "--porcelain", "--untracked-files=all")).toBe("")
+  })
+
+  it("stops in Changesets prerelease mode", async () => {
+    const fixture = createFixture({ monorepo: true, preTag: "next" })
+    const result = await fixture.run({ only: ["alpha"] })
+    expect(result.error?.message).toBe("`--only` cannot be used in Changesets prerelease mode.")
+  })
+
+  it("cannot resume a release", async () => {
+    const fixture = createFixture({ monorepo: true })
+    const result = await fixture.run({ resume: true, only: ["alpha"] })
+    expect(result.error?.message).toBe(
+      "`--only` does not apply to `--resume`, which finishes the existing release.",
+    )
   })
 })
 

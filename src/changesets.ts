@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rename, rm, rmdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, dirname, join } from "node:path"
 
-import { type Context, logDetail, ReleaseError } from "./context"
+import { type Context, formatList, logDetail, ReleaseError } from "./context"
 import {
   captureCommand,
   describeFailure,
@@ -12,6 +12,7 @@ import {
 } from "./exec"
 import { readJsonFile } from "./json"
 import { sortByName } from "./packages"
+import { getWorkTreeFiles } from "./project"
 
 /** Supported major version of `@changesets/cli`. */
 const supportedMajor = 3
@@ -35,9 +36,17 @@ export interface PublishPlanEntry {
   tag?: string
 }
 
+/** A pending changeset, as read by `changeset status`. */
+export interface PendingChangeset {
+  /** Path of the changeset file in the `.changeset` directory, without the `.md` extension. */
+  id: string
+  /** Names of the packages for which the changeset requests a major, minor, or patch bump. */
+  packages: string[]
+}
+
 /** Release plan JSON written by `changeset status --output`. */
 interface ReleasePlan {
-  changesets: unknown[]
+  changesets: Array<{ id: string; releases: Array<{ name: string; type: string }> }>
   releases: Array<{
     name: string
     type: string
@@ -73,17 +82,102 @@ export async function assertChangesetsInstalled(ctx: Context) {
   }
 }
 
-/** Plans the package releases of the pending changesets, sorted by name; the list is empty without releasable changesets. */
-export async function planRelease(ctx: Context, cwd = ctx.cwd): Promise<PlannedRelease[]> {
+/**
+ * Plans the package releases of the pending changesets of a work tree, as reported by `changeset status`.
+ *
+ * Returns the package releases sorted by name, empty without releasable changesets, and the pending changesets that it reports.
+ */
+export async function planRelease(
+  ctx: Context,
+  cwd = ctx.cwd,
+): Promise<{ releases: PlannedRelease[]; changesets: PendingChangeset[] }> {
   const plan = await withTempFile("status.json", async output => {
     await readCommand(ctx, changesetBin, ["status", "--output", output], { cwd })
     return (await readJsonFile<ReleasePlan>(output))!
   })
-  return sortByName(
-    plan.releases.flatMap(({ name, type, newVersion, changesets }) =>
-      isBumpType(type) ? [{ name, type, newVersion, hasChangeset: changesets.length > 0 }] : [],
+  return {
+    releases: sortByName(
+      plan.releases.flatMap(({ name, type, newVersion, changesets }) =>
+        isBumpType(type) ? [{ name, type, newVersion, hasChangeset: changesets.length > 0 }] : [],
+      ),
     ),
-  )
+    changesets: plan.changesets.map(({ id, releases }) => ({
+      id,
+      packages: releases.filter(({ type }) => isBumpType(type)).map(({ name }) => name),
+    })),
+  }
+}
+
+/**
+ * Returns the pending changesets that a release of the given packages leaves pending: those that bump none of them.
+ *
+ * Fails if no pending changeset requests a bump for a given package, or if a selected changeset also requests a bump for a package outside the selection: versioning applies a changeset as a whole.
+ */
+export function getDeferredChangesets(changesets: PendingChangeset[], packages: string[]) {
+  const selected = changesets.filter(entry => entry.packages.some(name => packages.includes(name)))
+  const missing = packages.filter(name => !selected.some(entry => entry.packages.includes(name)))
+  if (missing.length > 0) {
+    throw new ReleaseError(`No pending changeset bumps ${missing.join(", ")}.`)
+  }
+  for (const entry of selected) {
+    const others = entry.packages.filter(name => !packages.includes(name))
+    if (others.length > 0) {
+      throw new ReleaseError(
+        `.changeset/${entry.id}.md also bumps ${others.join(", ")}. Add \`${others.map(name => `--only ${name}`).join(" ")}\` or split the changeset.`,
+      )
+    }
+  }
+  return changesets.filter(entry => !selected.includes(entry))
+}
+
+/** Checks whether a work tree is in Changesets prerelease mode, which also covers a pending exit from it. */
+export function isInPrereleaseMode(cwd: string) {
+  return getWorkTreeFiles(cwd).exists(join(".changeset", "pre.json"))
+}
+
+/**
+ * Runs a callback with changeset files hidden from Changesets in a work tree, and restores the files afterwards, also on failure.
+ *
+ * Hides a file by moving it into a new dot directory beside it, which Changesets does not read; moving keeps its mode and a symbolic link.
+ * Fails after trying to restore every file when some of them cannot be restored, naming them.
+ */
+export async function withoutChangesets<T>(
+  cwd: string,
+  changesets: PendingChangeset[],
+  callback: () => Promise<T>,
+) {
+  const hidden: Array<{ path: string; hiddenPath: string }> = []
+  try {
+    // One by one, so that a failure leaves only the files moved so far to restore.
+    for (const { id } of changesets) {
+      const path = join(cwd, ".changeset", `${id}.md`)
+      const dir = await mkdtemp(join(dirname(path), ".changesets-release-"))
+      const hiddenPath = join(dir, basename(path))
+      try {
+        await rename(path, hiddenPath)
+      } catch (error) {
+        await rmdir(dir).catch(() => {})
+        throw error
+      }
+      hidden.push({ path, hiddenPath })
+    }
+    return await callback()
+  } finally {
+    const unrestored: string[] = []
+    for (const { path, hiddenPath } of hidden) {
+      try {
+        await rename(hiddenPath, path)
+      } catch (error) {
+        unrestored.push(`${path}: ${(error as Error).message}`)
+        continue
+      }
+      // An empty directory left behind changes nothing in Git.
+      await rmdir(dirname(hiddenPath)).catch(() => {})
+    }
+    if (unrestored.length > 0) {
+      throw new ReleaseError(`Could not restore changesets:\n${formatList(unrestored)}`)
+    }
+  }
 }
 
 /** Returns what `changeset publish` would publish and tag from a work tree, as reported by `changeset publish-plan`. */

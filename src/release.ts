@@ -7,11 +7,15 @@ import { extractChangelogEntry } from "./changelog"
 import {
   applyChangesets,
   assertChangesetsInstalled,
+  getDeferredChangesets,
+  isInPrereleaseMode,
+  type PendingChangeset,
   type PlannedRelease,
   planRelease,
   publishPackages,
   type PublishPlanEntry,
   readPublishPlan,
+  withoutChangesets,
 } from "./changesets"
 import { awaitChecks, confirmFailedChecks, type PendingChecks, previewChecks } from "./ci"
 import {
@@ -123,6 +127,19 @@ export interface ReleaseOptions {
   dryRun?: boolean
   /** Finishes the release of the newest release commit, if it is incomplete, instead of starting a new one. */
   resume?: boolean
+  /** Releases only these packages, with the packages that Changesets also bumps, and leaves the changesets of the others for a later release. */
+  only?: string[]
+}
+
+/** Package releases planned from the pending changesets of a release. */
+interface PendingRelease {
+  plan: PlannedRelease[]
+  /** Pending changesets of the release, as reported by `changeset status`. */
+  changesets: PendingChangeset[]
+  /** Pending changesets that the release leaves for a later one. */
+  deferred: PendingChangeset[]
+  /** Whether the project is in Changesets prerelease mode. */
+  prerelease: boolean
 }
 
 /** Who publishes the packages of a release, and from where. */
@@ -179,9 +196,8 @@ interface PackageRangeChange {
 }
 
 /** What a release will do, shown before the confirmation. */
-interface ReleaseSummary {
+interface ReleaseSummary extends PendingRelease {
   subject: string
-  plan: PlannedRelease[]
   releases: PackageRelease[]
   /** Name of the main package, which may be outside the release, or null when GitHub decides which release is `Latest`. */
   mainPackage: string | null
@@ -211,6 +227,11 @@ const workspaceSpecifierPrefixes = ["workspace:", "catalog:"]
  * With `resume`, finishes the release of the newest release commit instead, if it is incomplete.
  */
 export async function release(ctx: Context, options: ReleaseOptions = {}) {
+  if (options.resume && options.only) {
+    throw new ReleaseError(
+      "`--only` does not apply to `--resume`, which finishes the existing release.",
+    )
+  }
   const workspace = await prepareWorkspace(ctx, options)
   if (options.resume) {
     await resumeRelease(ctx, workspace, options)
@@ -344,15 +365,16 @@ async function startRelease(ctx: Context, workspace: Workspace, options: Release
     if (workspace.branch === workspace.project.baseBranch && !syncProblem) {
       await previewChecks(ctx, workspace.repo, head)
     }
-    await previewRelease(ctx, workspace, head)
+    await previewRelease(ctx, workspace, head, options.only)
     return
   }
-  const plan = await planPendingRelease(ctx, ctx.cwd)
+  const pending = await planPendingRelease(ctx, ctx.cwd, options.only)
   // Asks about already failed checks before versioning; the others are awaited after the confirmation and release:check.
   const pendingChecks = await confirmFailedChecks(ctx, workspace.repo, head)
 
-  const { commit, subject, releases } = await createReleaseCommit(ctx, workspace, plan, {
+  const { commit, subject, releases } = await createReleaseCommit(ctx, workspace, pending, {
     pendingChecks,
+    only: options.only,
   })
   const state: ReleaseState = {
     commit,
@@ -373,15 +395,41 @@ async function startRelease(ctx: Context, workspace: Workspace, options: Release
   }
 }
 
-/** Plans the release of the pending changesets in a work tree, and fails when they release nothing. */
-async function planPendingRelease(ctx: Context, cwd: string) {
-  const plan = await planRelease(ctx, cwd)
+/**
+ * Plans the release of the pending changesets in a work tree, and fails when they release nothing.
+ *
+ * With `only`, plans the release of the changesets of these packages and defers the other changesets.
+ */
+async function planPendingRelease(
+  ctx: Context,
+  cwd: string,
+  only: string[] | undefined,
+): Promise<PendingRelease> {
+  // Checked before versioning, which removes the prerelease state when the project exits prerelease mode.
+  const prerelease = await isInPrereleaseMode(cwd)
+  // Prerelease mode keeps applied changesets pending, and its state tracks which ones it has applied.
+  if (only && prerelease) {
+    throw new ReleaseError("`--only` cannot be used in Changesets prerelease mode.")
+  }
+  const status = await planRelease(ctx, cwd)
+  const deferred = only ? getDeferredChangesets(status.changesets, only) : []
+  const { releases: plan, changesets } =
+    deferred.length > 0
+      ? await withoutChangesets(cwd, deferred, () => planRelease(ctx, cwd))
+      : status
+  // Changesets does not bump a package that its configuration ignores or a private package it does not version, even with a changeset.
+  const unplanned = (only ?? []).filter(name => !plan.some(entry => entry.name === name))
+  if (unplanned.length > 0) {
+    throw new ReleaseError(
+      `Changesets plans no release of ${unplanned.join(", ")} despite pending changesets; check \`ignore\` and \`privatePackages\` in .changeset/config.json.`,
+    )
+  }
   if (plan.length === 0) {
     throw new ReleaseError(
       "No pending changesets release any package. Add one with `npx changeset` and commit it.",
     )
   }
-  return plan
+  return { plan, changesets, deferred, prerelease }
 }
 
 /** Describes how HEAD differs from the remote base branch, or returns null when they are at the same commit. */
@@ -527,29 +575,33 @@ async function assertUnreleased(ctx: Context, workspace: Workspace, releases: Pa
 async function createReleaseCommit(
   ctx: Context,
   workspace: Workspace,
-  plan: PlannedRelease[],
-  options: { pendingChecks: PendingChecks | null },
+  pending: PendingRelease,
+  options: { pendingChecks: PendingChecks | null; only: string[] | undefined },
 ) {
   const { project } = workspace
   const subject = formatReleaseSubject(
-    plan.map(entry => ({ name: entry.name, version: entry.newVersion })),
+    pending.plan.map(entry => ({ name: entry.name, version: entry.newVersion })),
   )
   let releases: PackageRelease[]
   try {
     logStep(ctx, "Versioning")
-    const versioned = await versionPackages(ctx, workspace, plan, ctx.cwd)
+    const versioned = await versionPackages(ctx, workspace, pending, ctx.cwd)
     releases = versioned.releases
     if (project.lockfile) {
       await runCommand(ctx, ...getLockfileUpdateCommand(project.packageManager))
     }
     const publishPlan = await assertPublishable(ctx, workspace, getTagged(releases), ctx.cwd)
-    await assertPublisherAccess(ctx, workspace, releases, getWorkTreeFiles(ctx.cwd).read)
+    await assertPublisherAccess(ctx, workspace, releases, getWorkTreeFiles(ctx.cwd).read, {
+      resumed: false,
+      only: options.only,
+      pending,
+    })
 
     const confirmedTree = await stageWorkTree(ctx)
     const diffStat = await readCommand(ctx, "git", ["diff", "--cached", "--stat"])
     printSummary(ctx, workspace, {
       subject,
-      plan,
+      ...pending,
       ...versioned,
       publishPlan,
       diffStat,
@@ -603,17 +655,18 @@ async function createReleaseCommit(
 }
 
 /**
- * Applies the pending changesets in a work tree and reads the versioned packages and their release notes.
+ * Applies the pending changesets of a release in a work tree and reads the versioned packages and their release notes.
  *
+ * Leaves the deferred changesets pending.
  * Fails when a versioned package is already released; only versioning tells which packages are private and tagged.
  */
 async function versionPackages(
   ctx: Context,
   workspace: Workspace,
-  plan: PlannedRelease[],
+  { plan, deferred }: PendingRelease,
   cwd: string,
 ) {
-  await applyChangesets(ctx, cwd)
+  await withoutChangesets(cwd, deferred, () => applyChangesets(ctx, cwd))
   const releases = await listWorkTreeVersionChanges(ctx, workspace.project, cwd)
   const planned = formatVersions(
     plan.map(entry => ({ name: entry.name, version: entry.newVersion })),
@@ -719,17 +772,26 @@ async function listUnreleasedRangeChanges(
   return sortByName(unreleased)
 }
 
+/** Context used to suggest how to complete a first publication. */
+type PublisherCheckRun =
+  /** A new release, with its `--only` packages, if any. */
+  | { resumed: false; only: string[] | undefined; pending: PendingRelease }
+  /** A resumed release. */
+  | { resumed: true }
+
 /**
  * Fails unless the publisher of a release can publish its public packages: the npm user, or the publishing workflow with npm trusted publishing.
  *
  * Checked once per run, before the confirmation or before a resumed release pushes.
  * `read` reads files of the released tree, by their paths from the repository root.
+ * `run` decides the command that a failure advises.
  */
 async function assertPublisherAccess(
   ctx: Context,
   workspace: Workspace,
   packages: PackageRelease[],
   read: RepoFileReader,
+  run: PublisherCheckRun,
 ) {
   const { publisher } = workspace
   const publicPackages = packages.filter(entry => !entry.private)
@@ -745,7 +807,11 @@ async function assertPublisherAccess(
         getPublishWorkflowPublisher(workspace.repo),
         publicPackages,
         read,
-        { provenance: publisher.provenance },
+        {
+          provenance: publisher.provenance,
+          adviseFirstPublication: unpublished =>
+            adviseFirstPublication(publicPackages, unpublished, run),
+        },
       )
       return
     case "workflow":
@@ -755,6 +821,55 @@ async function assertPublisherAccess(
         workspace.project.packageManager,
       )
   }
+}
+
+/**
+ * Advises how to publish the first versions of packages that the publishing workflow cannot publish because they are not on npm yet: from this machine.
+ *
+ * A new release that has other public packages advises `--only` with the unpublished packages when it selects only changesets of the release; Changesets may still bump other packages with them, which the confirmation of that release shows.
+ * Otherwise, it advises to publish the new release from this machine with its own selection.
+ * A resumed release, which cannot narrow its packages, is advised to finish its remaining steps from this machine.
+ */
+function adviseFirstPublication(
+  publicPackages: PackageRelease[],
+  unpublished: string[],
+  run: PublisherCheckRun,
+) {
+  const one = unpublished.length === 1
+  const firstVersions = one ? "its first version" : "their first versions"
+  const configure = `configure ${one ? "its trusted publisher" : "their trusted publishers"} right before ${one ? "its next release" : "their next releases"}`
+  if (run.resumed) {
+    return `When HEAD is at the release commit, finish the release from your machine with \`changesets-release --resume --publish=local\`, and ${configure}.`
+  }
+  const formatCommand = (only: string[]) =>
+    ["changesets-release --publish=local", ...only.map(name => `--only ${name}`)].join(" ")
+  const hasOthers = publicPackages.some(entry => !unpublished.includes(entry.name))
+  if (!hasOthers) {
+    return `Publish ${firstVersions} from your machine with \`${formatCommand(run.only ?? [])}\`, and ${configure}.`
+  }
+  if (canSelectFromRelease(run.pending, unpublished)) {
+    return `Publish ${firstVersions} from your machine with \`${formatCommand(unpublished)}\`, check in its confirmation which packages it publishes, and ${configure}.`
+  }
+  return `Release from your machine with \`${formatCommand(run.only ?? [])}\`, which publishes every public package of this release from there, and ${configure}; \`--only\` cannot select ${one ? "it" : "them"} alone without changing which changesets this release applies.`
+}
+
+/**
+ * Checks whether `--only` with the given packages would select only changesets of a release, without any changeset that the release defers.
+ *
+ * Prerelease mode does not allow `--only`.
+ */
+function canSelectFromRelease(pending: PendingRelease, packages: string[]) {
+  if (pending.prerelease) {
+    return false
+  }
+  const all = [...pending.changesets, ...pending.deferred]
+  let deferred: PendingChangeset[]
+  try {
+    deferred = getDeferredChangesets(all, packages)
+  } catch {
+    return false
+  }
+  return all.every(entry => deferred.includes(entry) || pending.changesets.includes(entry))
 }
 
 /**
@@ -922,7 +1037,12 @@ async function restoreWorkTree(ctx: Context) {
 }
 
 /** Shows the release that pending changesets would produce, versioning a temporary worktree instead of the project. */
-async function previewRelease(ctx: Context, workspace: Workspace, head: string) {
+async function previewRelease(
+  ctx: Context,
+  workspace: Workspace,
+  head: string,
+  only: string[] | undefined,
+) {
   logStep(ctx, "Versioning in a temporary worktree")
   const tempDir = await mkdtemp(join(tmpdir(), "changesets-release-"))
   const tree = join(tempDir, "tree")
@@ -933,22 +1053,26 @@ async function previewRelease(ctx: Context, workspace: Workspace, head: string) 
       // Changesets resolves the changelog generator from the project dependencies.
       await symlink(join(ctx.cwd, "node_modules"), join(tree, "node_modules"))
       // Planned from HEAD like the preview, without uncommitted changesets.
-      const plan = await planPendingRelease(ctx, tree)
-      const versioned = await versionPackages(ctx, workspace, plan, tree)
+      const pending = await planPendingRelease(ctx, tree, only)
+      const versioned = await versionPackages(ctx, workspace, pending, tree)
       const publishPlan = await assertPublishable(
         ctx,
         workspace,
         getTagged(versioned.releases),
         tree,
       )
-      await assertPublisherAccess(ctx, workspace, versioned.releases, getWorkTreeFiles(tree).read)
+      await assertPublisherAccess(ctx, workspace, versioned.releases, getWorkTreeFiles(tree).read, {
+        resumed: false,
+        only,
+        pending,
+      })
       // The node_modules symlink is not ignored by a `node_modules/` pattern, which matches only directories.
       await readCommand(ctx, "git", ["add", "--all"], { cwd: tree })
       await readCommand(ctx, "git", ["reset", "--quiet", "--", "node_modules"], { cwd: tree })
       const diffStat = await readCommand(ctx, "git", ["diff", "--cached", "--stat"], { cwd: tree })
       summary = {
         subject: formatReleaseSubject(versioned.releases),
-        plan,
+        ...pending,
         ...versioned,
         publishPlan,
         diffStat,
@@ -1033,8 +1157,12 @@ async function resumeOnGitHub(
   }
   const unpublished = state.packages.filter(entry => !entry.published)
   // The workflow publishes the release commit, so its files decide.
-  await assertPublisherAccess(ctx, workspace, unpublished, path =>
-    readFileAtRevision(ctx, state.commit, path),
+  await assertPublisherAccess(
+    ctx,
+    workspace,
+    unpublished,
+    path => readFileAtRevision(ctx, state.commit, path),
+    { resumed: true },
   )
   // An unpushed release commit becomes the tip once pushed.
   if (state.pushed) {
@@ -1181,7 +1309,9 @@ export async function publishFromWorkflow(ctx: Context, commit: string) {
         `The workflow runs at ${head.slice(0, 7)}, which ${baseBranch} had when it was dispatched, not at the release commit ${short}; npm provenance would name ${head.slice(0, 7)} as the source of the packages. ${formatMovedBranchAdvice(baseBranch)}`,
       )
     }
-    await assertPublisherAccess(ctx, workspace, state.packages, getWorkTreeFiles(ctx.cwd).read)
+    await assertPublisherAccess(ctx, workspace, state.packages, getWorkTreeFiles(ctx.cwd).read, {
+      resumed: true,
+    })
   }
   // Changesets and the release create annotated tags, which need a tagger.
   const jobCtx = (await hasCommitterIdentity(ctx))
@@ -1351,7 +1481,9 @@ async function finishRelease(
       }
       await assertPublishable(ctx, workspace, expectedPublication, ctx.cwd)
       if (resumed) {
-        await assertPublisherAccess(ctx, workspace, unpublished, getWorkTreeFiles(ctx.cwd).read)
+        await assertPublisherAccess(ctx, workspace, unpublished, getWorkTreeFiles(ctx.cwd).read, {
+          resumed: true,
+        })
         await awaitUserBeforePublishing(ctx, workspace, unpublished, checksStartedAt)
       }
     }
@@ -1532,6 +1664,12 @@ function printSummary(ctx: Context, workspace: Workspace, summary: ReleaseSummar
       })
       .join("\n"),
   )
+  const deferredPackages = [
+    ...new Set(summary.deferred.flatMap(entry => entry.packages)),
+  ].toSorted()
+  if (deferredPackages.length > 0) {
+    ctx.log(`\nPending changesets of ${deferredPackages.join(", ")} stay for a later release.`)
+  }
   if (summary.rangeChanges.length > 0) {
     ctx.log(`\n${styleText("bold", "Dependency ranges:")}`)
     ctx.log(
