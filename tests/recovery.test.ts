@@ -137,6 +137,43 @@ describe("failure after the release commit", () => {
     expect(countPublishAttempts(fixture)).toBe(1)
   })
 
+  describe("resume after later commits", () => {
+    it("advises to publish from a release commit already on the remote branch", async () => {
+      const fixture = createFixture()
+      fixture.updateState(state => {
+        state.npm.publishFailures[packageName] = "before-upload"
+      })
+      await runInterrupted(fixture, "`changeset publish` failed.")
+      const release = fixture.git("rev-parse", "HEAD")
+      fixture.git("commit", "--quiet", "--allow-empty", "--message", "Later change")
+      expect(fixture.remoteGit("rev-parse", "main")).toBe(release)
+      const result = await fixture.run({ resume: true })
+      expect(result.error?.message).toBe(
+        `npm does not show every version of "Release ${packageName}@1.0.1", and HEAD has moved past its release commit ${release.slice(0, 7)}. If they were just published, wait a few minutes and resume; otherwise publish them from the release commit manually.`,
+      )
+    })
+
+    it("advises to push a release commit missing from the remote branch and resume", async () => {
+      const fixture = createFixture()
+      fixture.rejectPushes("refs/heads/*")
+      await runInterrupted(fixture, "`git push origin")
+      fixture.rejectPushes(null)
+      const release = fixture.git("rev-parse", "HEAD")
+      fixture.git("commit", "--quiet", "--allow-empty", "--message", "Later change")
+      const result = await fixture.run({ resume: true })
+      expect(result.error?.message).toBe(
+        `npm does not show every version of "Release ${packageName}@1.0.1", and HEAD has moved past its release commit ${release.slice(0, 7)}, which is not on origin/main. Push it with \`git push origin ${release}:refs/heads/main\` and run \`changesets-release --resume\`.`,
+      )
+      expect(countPublishAttempts(fixture)).toBe(0)
+
+      fixture.git("push", "--quiet", "origin", `${release}:refs/heads/main`)
+      expect(fixture.remoteGit("rev-parse", "main")).toBe(release)
+      expect((await fixture.run({ resume: true })).error?.message).toContain(
+        "otherwise publish them from the release commit manually.",
+      )
+    })
+  })
+
   it("creates a missing GitHub Release after later commits", async () => {
     const fixture = createFixture()
     fixture.updateState(state => {

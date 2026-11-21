@@ -1120,8 +1120,13 @@ async function resumeRelease(ctx: Context, workspace: Workspace, options: Releas
     state.packages.some(entry => !entry.published) &&
     (await resolveCommit(ctx, "HEAD")) !== state.commit
   ) {
+    const moved = `npm does not show every version of "${state.subject}", and HEAD has moved past its release commit ${state.commit.slice(0, 7)}`
+    const { upstream } = workspace
     throw new ReleaseError(
-      `npm does not show every version of "${state.subject}", and HEAD has moved past its release commit ${state.commit.slice(0, 7)}. If they were just published, wait a few minutes and resume; otherwise publish them from the release commit manually.`,
+      state.pushed
+        ? `${moved}. If they were just published, wait a few minutes and resume; otherwise publish them from the release commit manually.`
+        : // Pushes only the release commit, which leaves the later commits local.
+          `${moved}, which is not on ${upstream.name}. Push it with \`git push ${upstream.remote} ${state.commit}:${upstream.mergeRef}\` and run \`${workspace.resumeCommand}\`.`,
     )
   }
   // Checked before the confirmation to fail early, and again right before publishing.
