@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdtemp, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 
@@ -40,13 +40,29 @@ export interface PublishPlanEntry {
 export interface PendingChangeset {
   /** Path of the changeset file in the `.changeset` directory, without the `.md` extension. */
   id: string
-  /** Names of the packages for which the changeset requests a major, minor, or patch bump. */
-  packages: string[]
+  /** Packages of the frontmatter with their bump types, including `none`. */
+  releases: Array<{ name: string; type: string }>
+  summary: string
+}
+
+/** A pending changeset that bumps both selected packages and others, divided between a release of the selected packages and a later one. */
+export interface SplitChangeset {
+  /** The part with the bumps of the selected packages, which the release applies. */
+  applied: PendingChangeset
+  /** The part with the other packages, which the release leaves pending in the same file. */
+  kept: PendingChangeset
+}
+
+/** How a release of some of the packages treats the pending changesets that are not entirely its own. */
+export interface ChangesetSelection {
+  /** Changesets that bump none of the selected packages, which the release leaves pending. */
+  deferred: PendingChangeset[]
+  split: SplitChangeset[]
 }
 
 /** Release plan JSON written by `changeset status --output`. */
 interface ReleasePlan {
-  changesets: Array<{ id: string; releases: Array<{ name: string; type: string }> }>
+  changesets: PendingChangeset[]
   releases: Array<{
     name: string
     type: string
@@ -101,33 +117,82 @@ export async function planRelease(
         isBumpType(type) ? [{ name, type, newVersion, hasChangeset: changesets.length > 0 }] : [],
       ),
     ),
-    changesets: plan.changesets.map(({ id, releases }) => ({
-      id,
-      packages: releases.filter(({ type }) => isBumpType(type)).map(({ name }) => name),
-    })),
+    changesets: plan.changesets,
   }
 }
 
+/** Lists the names of the packages for which a changeset requests a major, minor, or patch bump. */
+export function listBumpedPackages({ releases }: PendingChangeset) {
+  return releases.filter(({ type }) => isBumpType(type)).map(({ name }) => name)
+}
+
 /**
- * Returns the pending changesets that a release of the given packages leaves pending: those that bump none of them.
+ * Divides the pending changesets for a release of the given packages: defers those that bump none of them, and splits those that also bump other packages.
  *
- * Fails if no pending changeset requests a bump for a given package, or if a selected changeset also requests a bump for a package outside the selection: versioning applies a changeset as a whole.
+ * The applied part of a split changeset has the frontmatter entries of the given packages, and the kept part those of the other packages, including entries with `none`.
+ * Fails if no pending changeset requests a bump for a given package.
  */
-export function getDeferredChangesets(changesets: PendingChangeset[], packages: string[]) {
-  const selected = changesets.filter(entry => entry.packages.some(name => packages.includes(name)))
-  const missing = packages.filter(name => !selected.some(entry => entry.packages.includes(name)))
+export function selectChangesets(
+  changesets: PendingChangeset[],
+  packages: string[],
+): ChangesetSelection {
+  const selected = changesets.filter(entry =>
+    listBumpedPackages(entry).some(name => packages.includes(name)),
+  )
+  const missing = packages.filter(
+    name => !selected.some(entry => listBumpedPackages(entry).includes(name)),
+  )
   if (missing.length > 0) {
     throw new ReleaseError(`No pending changeset bumps ${missing.join(", ")}.`)
   }
+  const split: SplitChangeset[] = []
   for (const entry of selected) {
-    const others = entry.packages.filter(name => !packages.includes(name))
-    if (others.length > 0) {
-      throw new ReleaseError(
-        `.changeset/${entry.id}.md also bumps ${others.join(", ")}. Add \`${others.map(name => `--only ${name}`).join(" ")}\` or split the changeset.`,
-      )
+    if (listBumpedPackages(entry).every(name => packages.includes(name))) {
+      continue
+    }
+    const isSelected = ({ name }: { name: string }) => packages.includes(name)
+    split.push({
+      applied: { ...entry, releases: entry.releases.filter(isSelected) },
+      kept: { ...entry, releases: entry.releases.filter(release => !isSelected(release)) },
+    })
+  }
+  return { deferred: changesets.filter(entry => !selected.includes(entry)), split }
+}
+
+/** Formats a changeset file: YAML frontmatter with a quoted package name per entry, and the summary. */
+function formatChangeset({ releases, summary }: PendingChangeset) {
+  // A JSON string is a YAML double-quoted string.
+  const frontmatter = releases.map(({ name, type }) => `${JSON.stringify(name)}: ${type}`)
+  return `---\n${frontmatter.join("\n")}\n---\n\n${summary}\n`
+}
+
+/**
+ * Writes the changeset files of a work tree, such as the kept parts of split changesets.
+ *
+ * Replaces a file at the path with a new regular file through a temporary file in a new dot directory beside it, so that writing changes neither the target of a symbolic link nor another hard link of the file; keeps the mode of a regular file.
+ */
+export async function writeChangesets(cwd: string, changesets: PendingChangeset[]) {
+  for (const entry of changesets) {
+    const path = join(cwd, ".changeset", `${entry.id}.md`)
+    const stats = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        return null
+      }
+      throw error
+    })
+    // Changesets does not read dot directories.
+    const dir = await mkdtemp(join(dirname(path), ".changesets-release-"))
+    const temporaryPath = join(dir, basename(path))
+    try {
+      await writeFile(temporaryPath, formatChangeset(entry))
+      if (stats?.isFile()) {
+        await chmod(temporaryPath, stats.mode & 0o7777)
+      }
+      await rename(temporaryPath, path)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
     }
   }
-  return changesets.filter(entry => !selected.includes(entry))
 }
 
 /** Checks whether a work tree is in Changesets prerelease mode, which also covers a pending exit from it. */
@@ -136,21 +201,23 @@ export function isInPrereleaseMode(cwd: string) {
 }
 
 /**
- * Runs a callback with changeset files hidden from Changesets in a work tree, and restores the files afterwards, also on failure.
+ * Runs a callback with the changesets of a work tree narrowed to a release of some of the packages, and restores the files afterwards, also on failure.
  *
+ * Hides the deferred changesets from Changesets, and puts the applied part of each split changeset in place of its file.
  * Hides a file by moving it into a new dot directory beside it, which Changesets does not read; moving keeps its mode and a symbolic link.
  * Fails after trying to restore every file when some of them cannot be restored, naming them.
  */
-export async function withoutChangesets<T>(
+export async function withSelectedChangesets<T>(
   cwd: string,
-  changesets: PendingChangeset[],
+  { deferred, split }: ChangesetSelection,
   callback: () => Promise<T>,
 ) {
   const hidden: Array<{ path: string; hiddenPath: string }> = []
+  const getPath = (entry: PendingChangeset) => join(cwd, ".changeset", `${entry.id}.md`)
   try {
     // One by one, so that a failure leaves only the files moved so far to restore.
-    for (const { id } of changesets) {
-      const path = join(cwd, ".changeset", `${id}.md`)
+    for (const entry of [...deferred, ...split.map(({ applied }) => applied)]) {
+      const path = getPath(entry)
       const dir = await mkdtemp(join(dirname(path), ".changesets-release-"))
       const hiddenPath = join(dir, basename(path))
       try {
@@ -161,11 +228,19 @@ export async function withoutChangesets<T>(
       }
       hidden.push({ path, hiddenPath })
     }
+    await writeChangesets(
+      cwd,
+      split.map(({ applied }) => applied),
+    )
     return await callback()
   } finally {
     const unrestored: string[] = []
     for (const { path, hiddenPath } of hidden) {
       try {
+        // Removes the applied part of a split changeset unless `changeset version` has applied it.
+        if (split.some(({ applied }) => getPath(applied) === path)) {
+          await rm(path, { force: true })
+        }
         await rename(hiddenPath, path)
       } catch (error) {
         unrestored.push(`${path}: ${(error as Error).message}`)

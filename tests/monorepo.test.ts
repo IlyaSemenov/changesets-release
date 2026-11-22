@@ -367,17 +367,34 @@ describe("release of some packages", () => {
     expect(fixture.git("ls-files", ".changeset/*.md")).toBe(".changeset/note.md")
   })
 
-  it("stops when a changeset of the package also bumps another package", async () => {
+  it("releases the selected package and keeps the shared changeset for the other package", async () => {
     const fixture = createFixture({
       monorepo: true,
       changesets: { fix: changeset("patch", "Fix both.", ["alpha", "@fixture/beta"]) },
     })
-    const result = await fixture.run({ only: ["alpha"] })
-    expect(result.error?.message).toBe(
-      ".changeset/fix.md also bumps @fixture/beta. Add `--only @fixture/beta` or split the changeset.",
+    const preview = await fixture.run({ dryRun: true, only: ["alpha"] })
+    expect(preview.error).toBeUndefined()
+    expect(preview.output).toContain(
+      "Pending changesets of @fixture/beta stay for a later release.\n.changeset/fix.md applies to alpha and stays for @fixture/beta.\n",
     )
-    expect(result.questions).toEqual([])
     expect(fixture.git("status", "--porcelain", "--untracked-files=all")).toBe("")
+    // The changelog names the commit that added the changeset, in both releases.
+    const commit = fixture.git("log", "--format=%H", "--", ".changeset/fix.md").slice(0, 7)
+
+    const result = await fixture.run({ only: ["alpha"] })
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual(["Release alpha@1.0.1?"])
+    expectPackageReleased(fixture, "packages/alpha", "1.0.1")
+    expect(fixture.read("packages/alpha/CHANGELOG.md")).toContain(`- ${commit}: Fix both.`)
+    expect(fixture.git("show", "HEAD:.changeset/fix.md")).toBe(
+      readFixture("beta-patch-kept.md").trimEnd(),
+    )
+    expect(fixture.git("status", "--porcelain", "--untracked-files=all")).toBe("")
+
+    expect((await fixture.run()).error).toBeUndefined()
+    expect(fixture.git("log", "-1", "--format=%s")).toBe("Release @fixture/beta@1.0.1")
+    expect(fixture.read("packages/beta/CHANGELOG.md")).toContain(`- ${commit}: Fix both.`)
+    expect(fixture.git("ls-files", ".changeset/*.md")).toBe("")
   })
 
   it("stops when Changesets plans no release of the package", async () => {

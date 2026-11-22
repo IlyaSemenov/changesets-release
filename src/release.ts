@@ -7,16 +7,19 @@ import { extractChangelogEntry } from "./changelog"
 import {
   applyChangesets,
   assertChangesetsInstalled,
-  getDeferredChangesets,
+  type ChangesetSelection,
   isInPrereleaseMode,
+  listBumpedPackages,
   type PendingChangeset,
   type PlannedRelease,
   planRelease,
   publishPackages,
   type PublishPlanEntry,
   readPublishPlan,
-  withoutChangesets,
+  selectChangesets,
   withPrivatePackages,
+  withSelectedChangesets,
+  writeChangesets,
 } from "./changesets"
 import { awaitChecks, confirmFailedChecks, type PendingChecks, previewChecks } from "./ci"
 import {
@@ -137,13 +140,11 @@ export interface ReleaseOptions {
   only?: string[]
 }
 
-/** Package releases planned from the pending changesets of a release. */
-interface PendingRelease {
+/** Package releases planned from the pending changesets of a release, with the changesets that a release of some of the packages leaves pending entirely or partly. */
+interface PendingRelease extends ChangesetSelection {
   plan: PlannedRelease[]
   /** Pending changesets of the release, as reported by `changeset status`. */
   changesets: PendingChangeset[]
-  /** Pending changesets that the release leaves for a later one. */
-  deferred: PendingChangeset[]
   /** Whether the project is in Changesets prerelease mode. */
   prerelease: boolean
 }
@@ -418,7 +419,7 @@ async function startRelease(ctx: Context, workspace: Workspace, options: Release
 /**
  * Plans the release of the pending changesets in a work tree, and fails when they release nothing.
  *
- * With `only`, plans the release of the changesets of these packages and defers the other changesets.
+ * With `only`, plans the release of the changesets of these packages: defers the other changesets, and applies a changeset that also bumps other packages only to the selected packages.
  */
 async function planPendingRelease(
   ctx: Context,
@@ -432,10 +433,10 @@ async function planPendingRelease(
     throw new ReleaseError("`--only` cannot be used in Changesets prerelease mode.")
   }
   const status = await planRelease(ctx, cwd)
-  const deferred = only ? getDeferredChangesets(status.changesets, only) : []
+  const selection = only ? selectChangesets(status.changesets, only) : { deferred: [], split: [] }
   const { releases: plan, changesets } =
-    deferred.length > 0
-      ? await withoutChangesets(cwd, deferred, () => planRelease(ctx, cwd))
+    selection.deferred.length > 0 || selection.split.length > 0
+      ? await withSelectedChangesets(cwd, selection, () => planRelease(ctx, cwd))
       : status
   // Changesets does not bump a package that its configuration ignores or a private package it does not version, even with a changeset.
   const unplanned = (only ?? []).filter(name => !plan.some(entry => entry.name === name))
@@ -449,7 +450,7 @@ async function planPendingRelease(
       "No pending changesets release any package. Add one with `npx changeset` and commit it.",
     )
   }
-  return { plan, changesets, deferred, prerelease }
+  return { plan, changesets, ...selection, prerelease }
 }
 
 /** Describes how HEAD differs from the remote base branch, or returns null when they are at the same commit. */
@@ -680,16 +681,20 @@ async function createReleaseCommit(
 /**
  * Applies the pending changesets of a release in a work tree and reads the versioned packages and their release notes.
  *
- * Leaves the deferred changesets pending.
+ * Leaves the deferred changesets and the kept parts of the split ones pending.
  * Fails when a versioned package is already released; only versioning tells which packages are private and tagged.
  */
 async function versionPackages(
   ctx: Context,
   workspace: Workspace,
-  { plan, deferred }: PendingRelease,
+  { plan, deferred, split }: PendingRelease,
   cwd: string,
 ) {
-  await withoutChangesets(cwd, deferred, () => applyChangesets(ctx, cwd))
+  await withSelectedChangesets(cwd, { deferred, split }, () => applyChangesets(ctx, cwd))
+  await writeChangesets(
+    cwd,
+    split.map(({ kept }) => kept),
+  )
   const releases = await listWorkTreeVersionChanges(ctx, workspace.project, cwd)
   const planned = formatVersions(
     plan.map(entry => ({ name: entry.name, version: entry.newVersion })),
@@ -1810,11 +1815,15 @@ function printSummary(ctx: Context, workspace: Workspace, summary: ReleaseSummar
       })
       .join("\n"),
   )
-  const deferredPackages = [
-    ...new Set(summary.deferred.flatMap(entry => entry.packages)),
-  ].toSorted()
+  const kept = [...summary.deferred, ...summary.split.map(({ kept }) => kept)]
+  const deferredPackages = [...new Set(kept.flatMap(listBumpedPackages))].toSorted()
   if (deferredPackages.length > 0) {
     ctx.log(`\nPending changesets of ${deferredPackages.join(", ")} stay for a later release.`)
+  }
+  for (const { applied, kept } of summary.split) {
+    ctx.log(
+      `.changeset/${applied.id}.md applies to ${listBumpedPackages(applied).join(", ")} and stays for ${listBumpedPackages(kept).join(", ")}.`,
+    )
   }
   if (summary.rangeChanges.length > 0) {
     ctx.log(`\n${styleText("bold", "Dependency ranges:")}`)
