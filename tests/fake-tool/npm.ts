@@ -68,8 +68,20 @@ function viewPackage(call: FakeCall) {
   const spec = call.args[1] ?? ""
   const at = spec.lastIndexOf("@")
   const [name, version] = at > 0 ? [spec.slice(0, at), spec.slice(at + 1)] : [spec, undefined]
-  const versions = (state.npm.versions[name] ?? []).filter(
-    entry => !state.npm.hidden.includes(`${name}@${entry}`),
+  const published = state.npm.versions[name] ?? []
+  const pendingReads = published
+    .map(entry => `${name}@${entry}`)
+    .filter(key => (state.npm.hiddenReads[key] ?? 0) > 0)
+  if (pendingReads.length > 0) {
+    updateFakeState(call.stateDir, current => {
+      for (const key of pendingReads) {
+        current.npm.hiddenReads[key]!--
+      }
+    })
+  }
+  const versions = published.filter(
+    entry =>
+      !state.npm.hidden.includes(`${name}@${entry}`) && !pendingReads.includes(`${name}@${entry}`),
   )
   if (version === undefined && versions.length > 0) {
     const distTags = state.npm.distTags[name] ?? { latest: versions.at(-1)! }

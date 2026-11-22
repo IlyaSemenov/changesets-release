@@ -19,8 +19,9 @@ version them, push the release commit, publish them to npm, push the tags, and c
 
 Options:
   --publish <mode>  Where to publish: local, from this machine, or github, from the
-                    workflow .github/workflows/publish.yml; github when that workflow
-                    runs changesets-release ci, local otherwise
+                    workflow .github/workflows/publish.yml, except the first versions
+                    of new packages; github when that workflow runs
+                    changesets-release ci, local otherwise
   --only <package>  Release only this package, with the packages that Changesets
                     also bumps, and leave the other changesets pending; repeat
                     for several

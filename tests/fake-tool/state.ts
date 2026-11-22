@@ -19,6 +19,8 @@ export interface FakeState {
     distTags: Record<string, Record<string, string>>
     /** Published `name@version` entries that the registry does not show yet, as while npm scans a new version. */
     hidden: string[]
+    /** Reads of published `name@version` entries that the registry answers as if the version were missing, before showing it, as while npm scans a new version. */
+    hiddenReads: Record<string, number>
     /** Users of npm tokens configured for npm and pnpm in the publishing workflow, which `whoami` reports there, or null without one. */
     workflowUsers: { npm: string | null; pnpm: string | null }
     /** Version that `npm --version` reports. */
@@ -124,6 +126,7 @@ export function createFakeState(): FakeState {
       versions: {},
       distTags: {},
       hidden: [],
+      hiddenReads: {},
       workflowUsers: { npm: null, pnpm: null },
       cliVersion: "11.16.0",
       trustedPublishers: [],

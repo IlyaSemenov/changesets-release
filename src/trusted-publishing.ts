@@ -24,35 +24,31 @@ export interface TrustedPublisher {
 const minNpmVersion = "11.5.1"
 
 /**
- * Fails unless a trusted publisher can publish public packages.
+ * Returns the public packages that are not on npm yet, whose first versions trusted publishing cannot publish: npm configures a trusted publisher only for an existing package.
  *
- * Each package must already be on npm: npm configures a trusted publisher only for an existing package.
- * `adviseFirstPublication` supplies recovery advice for packages that have never been published.
- * When npm generates `provenance`, the `repository` of each package must point to the source repository, or npm rejects the publication.
- * `read` reads files of the released tree, by their paths from the repository root.
+ * A just-published package may be missing for several minutes while npm scans it.
  */
-export async function assertTrustedPublishable(
-  ctx: Context,
-  publisher: TrustedPublisher,
-  packages: PackageRelease[],
-  read: RepoFileReader,
-  {
-    provenance,
-    adviseFirstPublication,
-  }: { provenance: boolean; adviseFirstPublication: (unpublished: string[]) => string },
-) {
+export async function listNewPackages(ctx: Context, packages: PackageRelease[]) {
   const publicPackages = packages.filter(entry => !entry.private)
   const versions = await Promise.all(
     publicPackages.map(entry => listPublishedVersions(ctx, entry.name)),
   )
-  const unpublished = publicPackages
-    .filter((_, index) => versions[index]!.length === 0)
-    .map(entry => entry.name)
-  if (unpublished.length > 0) {
-    throw new ReleaseError(
-      `${unpublished.join(", ")} ${unpublished.length === 1 ? "is" : "are"} not on npm yet, and npm can only trust a publisher of an existing package. ${adviseFirstPublication(unpublished)}`,
-    )
-  }
+  return publicPackages.filter((_, index) => versions[index]!.length === 0)
+}
+
+/**
+ * Fails when npm would reject the provenance of public packages that a trusted publisher publishes: when npm generates `provenance`, the `repository` of each package must point to the source repository.
+ *
+ * Does not check that npm trusts the publisher: only npm knows it, and `listNewPackages` tells which packages it cannot trust yet.
+ * `read` reads files of the released tree, by their paths from the repository root.
+ */
+export async function assertTrustedPublishable(
+  publisher: TrustedPublisher,
+  packages: PackageRelease[],
+  read: RepoFileReader,
+  { provenance }: { provenance: boolean },
+) {
+  const publicPackages = packages.filter(entry => !entry.private)
   if (!provenance) {
     return
   }

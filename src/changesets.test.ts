@@ -14,7 +14,12 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { filterVersionOutput, getDeferredChangesets, withoutChangesets } from "./changesets"
+import {
+  filterVersionOutput,
+  getDeferredChangesets,
+  withoutChangesets,
+  withPrivatePackages,
+} from "./changesets"
 
 describe("getDeferredChangesets", () => {
   const feature = { id: "feature", packages: ["alpha"] }
@@ -119,6 +124,69 @@ describe("withoutChangesets", () => {
       const [hiddenDir] = readdirSync(pre).filter(name => name.startsWith(".changesets-release-"))
       expect(readFileSync(join(pre, hiddenDir!, "fix.md"), "utf8")).toBe("Fix.")
     }))
+})
+
+describe("withPrivatePackages", () => {
+  const manifest = '{"name":"alpha",  "version":"1.0.0"}'
+  const config = '{ "baseBranch": "main", "privatePackages": false }\n'
+
+  /** Runs a test in a work tree with the package `packages/alpha`, written compactly, and the Changesets config, and removes the work tree afterwards. */
+  async function withWorkTree(test: (dir: string) => Promise<void>) {
+    const dir = mkdtempSync(join(tmpdir(), "changesets-release-test-"))
+    try {
+      mkdirSync(join(dir, "packages", "alpha"), { recursive: true })
+      mkdirSync(join(dir, ".changeset"))
+      writeFileSync(join(dir, "packages", "alpha", "package.json"), manifest)
+      writeFileSync(join(dir, ".changeset", "config.json"), config)
+      await test(dir)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  /** Asserts that the manifest and the config have their original content. */
+  function expectRestored(dir: string) {
+    expect(readFileSync(join(dir, "packages", "alpha", "package.json"), "utf8")).toBe(manifest)
+    expect(readFileSync(join(dir, ".changeset", "config.json"), "utf8")).toBe(config)
+  }
+
+  it("marks the packages private and lets Changesets version private packages during the callback", async () => {
+    await withWorkTree(async dir => {
+      await withPrivatePackages(dir, ["packages/alpha"], async () => {
+        const json = JSON.parse(
+          readFileSync(join(dir, "packages", "alpha", "package.json"), "utf8"),
+        )
+        expect(json).toEqual({ name: "alpha", version: "1.0.0", private: true })
+        expect(JSON.parse(readFileSync(join(dir, ".changeset", "config.json"), "utf8"))).toEqual({
+          baseBranch: "main",
+          privatePackages: { version: true, tag: false },
+        })
+      })
+      expectRestored(dir)
+    })
+  })
+
+  it("restores the files when the callback fails", async () => {
+    await withWorkTree(async dir => {
+      const promise = withPrivatePackages(dir, ["packages/alpha"], () =>
+        Promise.reject(new Error("Publication failed.")),
+      )
+      await expect(promise).rejects.toThrow("Publication failed.")
+      expectRestored(dir)
+    })
+  })
+
+  it("restores the files changed so far when a later package cannot be changed", async () => {
+    await withWorkTree(async dir => {
+      let called = false
+      const promise = withPrivatePackages(dir, ["packages/alpha", "packages/missing"], async () => {
+        called = true
+      })
+      await expect(promise).rejects.toThrow("ENOENT")
+      expect(called).toBe(false)
+      expectRestored(dir)
+    })
+  })
 })
 
 describe("filterVersionOutput", () => {

@@ -298,6 +298,210 @@ describe("preparing a release for GitHub Actions", () => {
     )
   })
 
+  describe("with packages that are not on npm yet", () => {
+    it("publishes the first version from the machine and leaves the tag to the workflow", async () => {
+      const fixture = createGitHubFixture()
+      fixture.updateState(state => {
+        state.npm.versions = {}
+      })
+      const result = await fixture.run()
+      expect(result.error).toBeUndefined()
+      expect(result.output).toContain(
+        [
+          `  - Push it to origin/main`,
+          `  - Publish to npm as tester: ${packageName}@1.0.1 (latest)`,
+          `  - Dispatch publish.yml on GitHub Actions to:`,
+          `    - Create and push tag v1.0.1`,
+          `    - Create GitHub Release in ${githubRepo}: v1.0.1`,
+        ].join("\n"),
+      )
+      expect(fixture.state().npm.publishes).toMatchObject([
+        { name: packageName, version: "1.0.1", trusted: false, provenance: false },
+      ])
+      expect(fixture.git("tag")).toBe("")
+      expect(fixture.state().gh.runs).toHaveLength(1)
+
+      expect((await fixture.runWorkflow()).error).toBeUndefined()
+      expectReleased(fixture, "1.0.1")
+      expect(fixture.state().npm.publishes).toHaveLength(1)
+    })
+
+    it("publishes only the new packages from the machine and the others from the workflow", async () => {
+      // A peer dependency on a version of this release, of a package that the release hides from the publication from the machine.
+      const fixture = createGitHubFixture({
+        monorepo: true,
+        packages: { "packages/beta": { peerDependencies: { alpha: "^1.0.0" } } },
+        changesets: {
+          breaking: changeset("major", "Break alpha.", ["alpha"]),
+          feature: changeset("minor", "Add beta.", ["@fixture/beta"]),
+        },
+      })
+      fixture.updateState(state => {
+        state.npm.versions["@fixture/beta"] = []
+      })
+      const result = await fixture.run()
+      expect(result.error).toBeUndefined()
+      expect(result.output).toContain(
+        [
+          `  - Publish to npm as tester: @fixture/beta@1.1.0 (latest)`,
+          `  - Dispatch publish.yml on GitHub Actions to:`,
+          `    - Publish to npm with provenance: alpha@2.0.0 (latest)`,
+        ].join("\n"),
+      )
+      expect(fixture.git("status", "--porcelain")).toBe("")
+      expect(JSON.parse(fixture.read("packages/beta/package.json")).peerDependencies).toEqual({
+        alpha: "^2.0.0",
+      })
+
+      expect((await fixture.runWorkflow()).error).toBeUndefined()
+      expectPackageReleased(fixture, "packages/alpha", "2.0.0")
+      expectPackageReleased(fixture, "packages/beta", "1.1.0")
+      expect(
+        fixture
+          .state()
+          .npm.publishes.map(entry => `${entry.name}@${entry.version} ${entry.trusted}`),
+      ).toEqual(["@fixture/beta@1.1.0 false", "alpha@2.0.0 true"])
+    })
+
+    it("logs in to npm for the first version", async () => {
+      const fixture = createGitHubFixture()
+      fixture.updateState(state => {
+        state.npm.versions = {}
+        state.npm.user = null
+        state.npm.loginUser = "tester"
+      })
+      const result = await fixture.run()
+      expect(result.error).toBeUndefined()
+      expect(fixture.calls("npm").some(([command]) => command === "login")).toBe(true)
+      expect(fixture.state().npm.publishes).toMatchObject([{ name: packageName, trusted: false }])
+    })
+
+    it("waits until npm shows the first version before dispatching the workflow", async () => {
+      const fixture = createGitHubFixture()
+      fixture.updateState(state => {
+        state.npm.versions = {}
+        state.npm.hiddenReads = { [`${packageName}@1.0.1`]: 2 }
+      })
+      const result = await fixture.run()
+      expect(result.error).toBeUndefined()
+      expect(result.output).toContain(`Waiting for npm to show ${packageName}@1.0.1`)
+      expect(fixture.state().npm.publishes).toHaveLength(1)
+      expect(fixture.state().gh.runs).toHaveLength(1)
+    })
+
+    it("does not publish from the machine a package that npm shows after the confirmation", async () => {
+      const fixture = createGitHubFixture()
+      fixture.updateState(state => {
+        state.npm.versions = {}
+      })
+      const result = await fixture.run(
+        {},
+        {
+          confirm: () => {
+            fixture.updateState(state => {
+              state.npm.versions[packageName] = ["0.9.0"]
+            })
+            return true
+          },
+        },
+      )
+      expect(result.error?.message).toContain(
+        `npm now shows ${packageName}, so the release does not publish it from your machine.`,
+      )
+      expect(fixture.state().npm.publishes).toEqual([])
+      expect(fixture.state().gh.runs).toEqual([])
+    })
+
+    it("does not advise changes to other packages when npm shows the first version after the confirmation", async () => {
+      const fixture = createGitHubFixture()
+      fixture.updateState(state => {
+        state.npm.versions = {}
+      })
+      const result = await fixture.run(
+        {},
+        {
+          confirm: () => {
+            fixture.updateState(state => {
+              state.npm.versions[packageName] = ["1.0.1"]
+            })
+            return true
+          },
+        },
+      )
+      expect(result.error?.message).toContain(`  - missing: publish ${packageName}@1.0.1`)
+      expect(result.error?.message).not.toContain("Unpublished versions of other packages")
+      expect(fixture.state().npm.publishes).toEqual([])
+      expect(fixture.state().gh.runs).toEqual([])
+    })
+
+    describe("when the base branch moves while npm does not show the first version yet", () => {
+      /** Adds a commit to main of the remote when the release starts to wait for npm. */
+      function moveMainOnWait(fixture: Fixture) {
+        return (line: string) => {
+          if (line.startsWith("Waiting for npm to show")) {
+            const commit = fixture.remoteGit(
+              "commit-tree",
+              "main^{tree}",
+              "-p",
+              "main",
+              "-m",
+              "Later change",
+            )
+            fixture.remoteGit("update-ref", "refs/heads/main", commit)
+          }
+        }
+      }
+
+      it("does not dispatch the workflow that would publish the other packages", async () => {
+        const fixture = createGitHubFixture({ monorepo: true })
+        fixture.updateState(state => {
+          state.npm.versions["@fixture/beta"] = []
+          state.npm.hiddenReads = { "@fixture/beta@1.0.1": 1 }
+        })
+        const result = await fixture.run({}, { onLog: moveMainOnWait(fixture) })
+        expect(result.error?.message).toContain("origin/main has moved past the release commit")
+        expect(fixture.state().npm.publishes).toMatchObject([{ name: "@fixture/beta" }])
+        expect(fixture.state().gh.runs).toEqual([])
+      })
+
+      it("dispatches the workflow with no npm publications left", async () => {
+        const fixture = createGitHubFixture()
+        fixture.updateState(state => {
+          state.npm.versions = {}
+          state.npm.hiddenReads = { [`${packageName}@1.0.1`]: 1 }
+        })
+        const result = await fixture.run({}, { onLog: moveMainOnWait(fixture) })
+        expect(result.error).toBeUndefined()
+        const runs = fixture.state().gh.runs
+        expect(runs).toHaveLength(1)
+        expect(runs[0]!.inputs.commit).toBe(fixture.git("rev-parse", "HEAD"))
+        expect(runs[0]!.sha).toBe(fixture.remoteGit("rev-parse", "main"))
+        expect(runs[0]!.sha).not.toBe(runs[0]!.inputs.commit)
+      })
+    })
+
+    it("does not dispatch the workflow when npm does not show the first version", async () => {
+      const fixture = createGitHubFixture()
+      fixture.updateState(state => {
+        state.npm.versions = {}
+        state.npm.hidden = [`${packageName}@1.0.1`]
+      })
+      const failed = await fixture.run()
+      expect(failed.error?.message).toContain(
+        `npm does not show ${packageName}@1.0.1 after \`changeset publish\`.`,
+      )
+      expect(failed.error?.message).toContain("run `changesets-release --resume` to finish it.")
+      expect(fixture.state().gh.runs).toEqual([])
+
+      fixture.updateState(state => {
+        state.npm.hidden = []
+      })
+      expect((await fixture.run({ resume: true })).error).toBeUndefined()
+      expect(fixture.state().npm.publishes).toHaveLength(1)
+      expect(fixture.state().gh.runs).toHaveLength(1)
+    })
+  })
+
   describe("checks before the confirmation", () => {
     /** Runs a release that must fail before the confirmation and returns its error message. */
     async function runRejected(fixture: Fixture, options: { publish?: "github" } = {}) {
@@ -350,91 +554,14 @@ describe("preparing a release for GitHub Actions", () => {
       )
     })
 
-    it("fails for a package that is not on npm yet", async () => {
-      const fixture = createGitHubFixture()
+    it("fails when a package that is not on npm yet requests provenance", async () => {
+      const fixture = createGitHubFixture({ packageJson: { publishConfig: { provenance: true } } })
       fixture.updateState(state => {
         state.npm.versions = {}
       })
-      expect(await runRejected(fixture)).toBe(
-        `${packageName} is not on npm yet, and npm can only trust a publisher of an existing package. Publish its first version from your machine with \`changesets-release --publish=local\`, and configure its trusted publisher right before its next release.`,
-      )
-    })
-
-    it("suggests a local release limited to packages that are new to npm", async () => {
-      const fixture = createGitHubFixture({ monorepo: true })
-      fixture.updateState(state => {
-        state.npm.versions["@fixture/beta"] = []
-      })
       expect(await runRejected(fixture)).toContain(
-        "Publish its first version from your machine with `changesets-release --publish=local --only @fixture/beta`, check in its confirmation which packages it publishes, and configure its trusted publisher right before its next release.",
+        'package.json: npm generates provenance only in CI; remove `"provenance": true` from publishConfig',
       )
-    })
-
-    it.each([{ dryRun: false }, { dryRun: true }])(
-      "keeps --only in the advice when every package of the release is new to npm with %o",
-      async options => {
-        const fixture = createGitHubFixture({
-          monorepo: true,
-          changesetsConfig: { fixed: [["alpha", "@fixture/beta"]] },
-          changesets: { fix: changeset("patch", "Fix alpha.", ["alpha"]) },
-        })
-        fixture.updateState(state => {
-          state.npm.versions["alpha"] = []
-          state.npm.versions["@fixture/beta"] = []
-        })
-        const result = await fixture.run({ ...options, only: ["alpha"] })
-        expect(result.error?.message).toBe(
-          "alpha, @fixture/beta are not on npm yet, and npm can only trust a publisher of an existing package. Publish their first versions from your machine with `changesets-release --publish=local --only alpha`, and configure their trusted publishers right before their next releases.",
-        )
-      },
-    )
-
-    describe("when the advice keeps the changesets of the release", () => {
-      const advice =
-        "Release from your machine with `changesets-release --publish=local`, which publishes every public package of this release from there, and configure its trusted publisher right before its next release; `--only` cannot select it alone without changing which changesets this release applies."
-      const dependency = { "packages/beta": { dependencies: { alpha: "^1.0.0" } } }
-
-      it.each([
-        [
-          "bumped only as a dependent",
-          {
-            packages: dependency,
-            changesets: { breaking: changeset("major", "Break.", ["alpha"]) },
-          },
-        ],
-        [
-          "with a changeset that also bumps another package",
-          { changesets: { fix: changeset("patch", "Fix both.", ["alpha", "@fixture/beta"]) } },
-        ],
-        ["in prerelease mode", { preTag: "next" }],
-      ] as const)(
-        "advises to release everything from the machine for a package %s",
-        async (_, options) => {
-          const fixture = createGitHubFixture({ monorepo: true, ...options })
-          fixture.updateState(state => {
-            state.npm.versions["@fixture/beta"] = []
-          })
-          expect(await runRejected(fixture)).toContain(advice)
-        },
-      )
-
-      it("does not advise a changeset that the release defers", async () => {
-        const fixture = createGitHubFixture({
-          monorepo: true,
-          packages: dependency,
-          changesets: {
-            breaking: changeset("major", "Break.", ["alpha"]),
-            feature: changeset("minor", "Add a feature.", ["@fixture/beta"]),
-          },
-        })
-        fixture.updateState(state => {
-          state.npm.versions["@fixture/beta"] = []
-        })
-        const result = await fixture.run({ only: ["alpha"] })
-        expect(result.error?.message).toContain(
-          advice.replace("--publish=local`", "--publish=local --only alpha`"),
-        )
-      })
     })
 
     it("fails when a package points to another repository", async () => {
@@ -564,6 +691,19 @@ describe("publishing workflow", () => {
     })
     expect((await fixture.runWorkflow()).error).toBeUndefined()
     expectReleased(fixture, "1.0.1")
+  })
+
+  it("advises to resume from the machine for a package that is not on npm yet", async () => {
+    const fixture = createGitHubFixture()
+    await prepare(fixture)
+    fixture.updateState(state => {
+      state.npm.versions = {}
+    })
+    const result = await fixture.runWorkflow()
+    expect(result.error?.message).toContain(
+      `${packageName} is not on npm yet, and npm can only trust a publisher of an existing package. Publish its first version from your machine with \`changesets-release --resume\`.`,
+    )
+    expect(countPublishAttempts(fixture)).toBe(0)
   })
 
   it("stops at a tag that points to another commit", async () => {
@@ -823,18 +963,37 @@ describe("resuming a release published from GitHub Actions", () => {
     ])
   })
 
-  it("advises to finish the release from the machine when a package is new to npm", async () => {
+  it("publishes the first version of a package that is not on npm yet from the machine", async () => {
     const fixture = createGitHubFixture()
-    fixture.rejectPushes("refs/heads/*")
-    expect((await fixture.run()).error?.message).toContain("`git push origin")
-    fixture.rejectPushes(null)
     fixture.updateState(state => {
       state.npm.versions = {}
     })
+    fixture.rejectPushes("refs/heads/*")
+    expect((await fixture.run()).error?.message).toContain("`git push origin")
+    fixture.rejectPushes(null)
     const result = await fixture.run({ resume: true })
-    expect(result.error?.message).toContain(
-      "When HEAD is at the release commit, finish the release from your machine with `changesets-release --resume --publish=local`, and configure its trusted publisher right before its next release.",
-    )
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual([
+      `Finish the release "${subject}": publish ${packageName}@1.0.1 to npm as tester, then dispatch publish.yml?`,
+    ])
+    expect(fixture.state().npm.publishes).toMatchObject([
+      { name: packageName, version: "1.0.1", trusted: false },
+    ])
+    expect(fixture.state().gh.runs).toHaveLength(1)
+  })
+
+  it("does not publish the first version of a package when HEAD has moved past the release commit", async () => {
+    const fixture = createGitHubFixture()
+    fixture.updateState(state => {
+      state.npm.versions = {}
+    })
+    fixture.rejectPushes("refs/heads/*")
+    expect((await fixture.run()).error?.message).toContain("`git push origin")
+    fixture.rejectPushes(null)
+    fixture.git("commit", "--quiet", "--allow-empty", "--message", "Later change")
+    const result = await fixture.run({ resume: true })
+    expect(result.error?.message).toContain("HEAD moved past the release commit")
+    expect(fixture.state().npm.publishes).toEqual([])
     expect(fixture.state().gh.runs).toEqual([])
   })
 

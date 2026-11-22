@@ -86,6 +86,8 @@ export interface Fixture {
       abortOnLog?: string
       waitForUser?: () => boolean
       presenceTimeout?: number
+      /** Called with each printed line, such as to change the remote while the release waits. */
+      onLog?: (line: string) => void
     },
   ) => Promise<RunResult>
   /** Runs Git in the project and returns its trimmed output. */
@@ -366,7 +368,9 @@ export function createFixture(options: FixtureOptions = {}): Fixture {
         signal: controller.signal,
         // The CLI styles its output when the tests run in a terminal.
         log: line => {
-          lines.push(stripVTControlCharacters(line))
+          const text = stripVTControlCharacters(line)
+          lines.push(text)
+          answers.onLog?.(text)
           if (answers.abortOnLog && line.includes(answers.abortOnLog)) {
             // After the synchronous code that follows the line, such as starting a wait.
             queueMicrotask(() => controller.abort())

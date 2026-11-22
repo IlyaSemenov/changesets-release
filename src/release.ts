@@ -16,10 +16,12 @@ import {
   type PublishPlanEntry,
   readPublishPlan,
   withoutChangesets,
+  withPrivatePackages,
 } from "./changesets"
 import { awaitChecks, confirmFailedChecks, type PendingChecks, previewChecks } from "./ci"
 import {
   type Context,
+  delay,
   formatList,
   logDetail,
   logDone,
@@ -103,7 +105,11 @@ import {
   type RepoFileReader,
 } from "./project"
 import { compareVersions, isPrerelease } from "./semver"
-import { assertTrustedPublishable, assertTrustedPublishingEnvironment } from "./trusted-publishing"
+import {
+  assertTrustedPublishable,
+  assertTrustedPublishingEnvironment,
+  listNewPackages,
+} from "./trusted-publishing"
 import {
   assertPublishWorkflowActive,
   dispatchPublication,
@@ -150,6 +156,16 @@ type Publisher =
   | { mode: "github"; provenance: boolean }
   /** This run inside the publishing workflow, with npm trusted publishing. */
   | { mode: "workflow" }
+
+/**
+ * Public packages that a run publishes from this machine, and the npm user who publishes them.
+ *
+ * With the publishing workflow, these are the first versions of packages that are not on npm yet: npm can only trust a publisher of an existing package.
+ */
+interface LocalPublications {
+  npmUser: string
+  packages: PackageRelease[]
+}
 
 /** A checked repository ready for a release. */
 interface Workspace {
@@ -210,6 +226,8 @@ interface ReleaseSummary extends PendingRelease {
   /** Public packages outside the release whose runtime dependencies differ from their current published versions. */
   unreleasedRangeChanges: UnreleasedRangeChanges[]
   publishPlan: PublishPlanEntry[]
+  /** Publications from this machine, or null when the release publishes nothing from it. */
+  localPublications: LocalPublications | null
   diffStat: string
   /** Commit whose CI checks the release reads after the confirmation, or null when it does not read them. */
   ciCommit: string | null
@@ -372,10 +390,12 @@ async function startRelease(ctx: Context, workspace: Workspace, options: Release
   // Asks about already failed checks before versioning; the others are awaited after the confirmation and release:check.
   const pendingChecks = await confirmFailedChecks(ctx, workspace.repo, head)
 
-  const { commit, subject, releases } = await createReleaseCommit(ctx, workspace, pending, {
+  const { commit, subject, releases, localPublications } = await createReleaseCommit(
+    ctx,
+    workspace,
+    pending,
     pendingChecks,
-    only: options.only,
-  })
+  )
   const state: ReleaseState = {
     commit,
     subject,
@@ -389,7 +409,7 @@ async function startRelease(ctx: Context, workspace: Workspace, options: Release
     })),
   }
   if (workspace.publisher.mode === "github") {
-    await publishOnGitHub(ctx, workspace, state)
+    await publishOnGitHub(ctx, workspace, state, localPublications)
   } else {
     await finishRelease(ctx, workspace, state, { resumed: false })
   }
@@ -576,13 +596,14 @@ async function createReleaseCommit(
   ctx: Context,
   workspace: Workspace,
   pending: PendingRelease,
-  options: { pendingChecks: PendingChecks | null; only: string[] | undefined },
+  pendingChecks: PendingChecks | null,
 ) {
   const { project } = workspace
   const subject = formatReleaseSubject(
     pending.plan.map(entry => ({ name: entry.name, version: entry.newVersion })),
   )
   let releases: PackageRelease[]
+  let localPublications: LocalPublications | null
   try {
     logStep(ctx, "Versioning")
     const versioned = await versionPackages(ctx, workspace, pending, ctx.cwd)
@@ -591,11 +612,13 @@ async function createReleaseCommit(
       await runCommand(ctx, ...getLockfileUpdateCommand(project.packageManager))
     }
     const publishPlan = await assertPublishable(ctx, workspace, getTagged(releases), ctx.cwd)
-    await assertPublisherAccess(ctx, workspace, releases, getWorkTreeFiles(ctx.cwd).read, {
-      resumed: false,
-      only: options.only,
-      pending,
-    })
+    localPublications = await assertPublisherAccess(
+      ctx,
+      workspace,
+      releases,
+      getWorkTreeFiles(ctx.cwd).read,
+      { login: true },
+    )
 
     const confirmedTree = await stageWorkTree(ctx)
     const diffStat = await readCommand(ctx, "git", ["diff", "--cached", "--stat"])
@@ -604,8 +627,9 @@ async function createReleaseCommit(
       ...pending,
       ...versioned,
       publishPlan,
+      localPublications,
       diffStat,
-      ciCommit: options.pendingChecks?.commit ?? null,
+      ciCommit: pendingChecks?.commit ?? null,
     })
     if (!(await ctx.confirm(`Release ${formatVersions(releases)}?`))) {
       throw new ReleaseError("Release cancelled.")
@@ -616,10 +640,9 @@ async function createReleaseCommit(
       await runReleaseCheck(ctx, workspace)
     }
     const answeredAboutCi =
-      options.pendingChecks !== null &&
-      (await awaitChecks(ctx, workspace.repo, options.pendingChecks))
+      pendingChecks !== null && (await awaitChecks(ctx, workspace.repo, pendingChecks))
     if (!answeredAboutCi) {
-      await awaitUserBeforePublishing(ctx, workspace, releases, checksStartedAt)
+      await awaitUserBeforePublishing(ctx, localPublications, checksStartedAt)
     }
     await assertUnchangedSinceConfirmation(ctx, workspace, confirmedTree)
 
@@ -651,7 +674,7 @@ async function createReleaseCommit(
       `A Git hook changed files after the release commit:\n${formatList(changedPaths)}\nDiscard the changes and run \`${workspace.resumeCommand}\`.`,
     )
   }
-  return { commit, subject, releases: committed }
+  return { commit, subject, releases: committed, localPublications }
 }
 
 /**
@@ -772,110 +795,98 @@ async function listUnreleasedRangeChanges(
   return sortByName(unreleased)
 }
 
-/** Context used to suggest how to complete a first publication. */
-type PublisherCheckRun =
-  /** A new release, with its `--only` packages, if any. */
-  | { resumed: false; only: string[] | undefined; pending: PendingRelease }
-  /** A resumed release. */
-  | { resumed: true }
-
 /**
- * Fails unless the publisher of a release can publish its public packages: the npm user, or the publishing workflow with npm trusted publishing.
+ * Fails unless the publishers of a release can publish its public packages, and returns the publications from this machine, or null when there are none.
  *
+ * Publishing from this machine needs the npm user, logged in with `login` when npm is not, and the publishing workflow needs npm trusted publishing.
+ * The publishing workflow cannot publish the first version of a package that is not on npm yet, so this machine publishes it before dispatching the workflow.
  * Checked once per run, before the confirmation or before a resumed release pushes.
  * `read` reads files of the released tree, by their paths from the repository root.
- * `run` decides the command that a failure advises.
  */
 async function assertPublisherAccess(
   ctx: Context,
   workspace: Workspace,
   packages: PackageRelease[],
   read: RepoFileReader,
-  run: PublisherCheckRun,
-) {
+  { login }: { login: boolean },
+): Promise<LocalPublications | null> {
   const { publisher } = workspace
   const publicPackages = packages.filter(entry => !entry.private)
   switch (publisher.mode) {
     case "local":
-      await Promise.all(
-        publicPackages.map(entry => assertCanPublish(ctx, publisher.npmUser, entry.name)),
-      )
-      return
-    case "github":
+      return assertLocalPublications(ctx, publisher.npmUser, publicPackages, read)
+    case "github": {
+      const newPackages = await listNewPackages(ctx, publicPackages)
       await assertTrustedPublishable(
-        ctx,
         getPublishWorkflowPublisher(workspace.repo),
-        publicPackages,
+        publicPackages.filter(entry => !newPackages.includes(entry)),
         read,
-        {
-          provenance: publisher.provenance,
-          adviseFirstPublication: unpublished =>
-            adviseFirstPublication(publicPackages, unpublished, run),
-        },
+        { provenance: publisher.provenance },
       )
-      return
-    case "workflow":
+      if (newPackages.length === 0) {
+        return null
+      }
+      const npmUser = await getNpmUser(ctx, { login })
+      return assertLocalPublications(ctx, npmUser, newPackages, read)
+    }
+    case "workflow": {
+      const newPackages = await listNewPackages(ctx, publicPackages)
+      if (newPackages.length > 0) {
+        const one = newPackages.length === 1
+        throw new ReleaseError(
+          `${newPackages.map(entry => entry.name).join(", ")} ${one ? "is" : "are"} not on npm yet, and npm can only trust a publisher of an existing package. Publish ${one ? "its first version" : "their first versions"} from your machine with \`changesets-release --resume\`.`,
+        )
+      }
       await assertTrustedPublishingEnvironment(
         ctx,
         getPublishWorkflowPublisher(workspace.repo),
         workspace.project.packageManager,
       )
+      return null
+    }
   }
 }
 
 /**
- * Advises how to publish the first versions of packages that the publishing workflow cannot publish because they are not on npm yet: from this machine.
+ * Fails unless an npm user can publish public packages from this machine, and returns them as its publications, or null when there are none.
  *
- * A new release that has other public packages advises `--only` with the unpublished packages when it selects only changesets of the release; Changesets may still bump other packages with them, which the confirmation of that release shows.
- * Otherwise, it advises to publish the new release from this machine with its own selection.
- * A resumed release, which cannot narrow its packages, is advised to finish its remaining steps from this machine.
+ * `read` reads files of the released tree, by their paths from the repository root.
  */
-function adviseFirstPublication(
-  publicPackages: PackageRelease[],
-  unpublished: string[],
-  run: PublisherCheckRun,
-) {
-  const one = unpublished.length === 1
-  const firstVersions = one ? "its first version" : "their first versions"
-  const configure = `configure ${one ? "its trusted publisher" : "their trusted publishers"} right before ${one ? "its next release" : "their next releases"}`
-  if (run.resumed) {
-    return `When HEAD is at the release commit, finish the release from your machine with \`changesets-release --resume --publish=local\`, and ${configure}.`
+async function assertLocalPublications(
+  ctx: Context,
+  npmUser: string,
+  packages: PackageRelease[],
+  read: RepoFileReader,
+): Promise<LocalPublications | null> {
+  if (packages.length === 0) {
+    return null
   }
-  const formatCommand = (only: string[]) =>
-    ["changesets-release --publish=local", ...only.map(name => `--only ${name}`)].join(" ")
-  const hasOthers = publicPackages.some(entry => !unpublished.includes(entry.name))
-  if (!hasOthers) {
-    return `Publish ${firstVersions} from your machine with \`${formatCommand(run.only ?? [])}\`, and ${configure}.`
+  for (const entry of packages) {
+    const path = join(entry.dir, "package.json")
+    assertNoProvenanceRequest(parseManifest(await read(path)), path)
   }
-  if (canSelectFromRelease(run.pending, unpublished)) {
-    return `Publish ${firstVersions} from your machine with \`${formatCommand(unpublished)}\`, check in its confirmation which packages it publishes, and ${configure}.`
-  }
-  return `Release from your machine with \`${formatCommand(run.only ?? [])}\`, which publishes every public package of this release from there, and ${configure}; \`--only\` cannot select ${one ? "it" : "them"} alone without changing which changesets this release applies.`
+  await Promise.all(packages.map(entry => assertCanPublish(ctx, npmUser, entry.name)))
+  return { npmUser, packages }
 }
 
 /**
- * Checks whether `--only` with the given packages would select only changesets of a release, without any changeset that the release defers.
+ * Fails when a package requests provenance in `publishConfig`, which prevents publishing it from this machine.
  *
- * Prerelease mode does not allow `--only`.
+ * npm generates provenance only in CI, and `NPM_CONFIG_PROVENANCE=false` cannot override `publishConfig`.
  */
-function canSelectFromRelease(pending: PendingRelease, packages: string[]) {
-  if (pending.prerelease) {
-    return false
+function assertNoProvenanceRequest(manifest: Manifest | null, path: string) {
+  if (manifest?.publishConfig?.provenance === true) {
+    throw new ReleaseError(
+      `${path}: npm generates provenance only in CI; remove \`"provenance": true\` from publishConfig to publish the package from your machine.`,
+    )
   }
-  const all = [...pending.changesets, ...pending.deferred]
-  let deferred: PendingChangeset[]
-  try {
-    deferred = getDeferredChangesets(all, packages)
-  } catch {
-    return false
-  }
-  return all.every(entry => deferred.includes(entry) || pending.changesets.includes(entry))
 }
 
 /**
  * Fails unless `changeset publish` in a work tree would publish and tag exactly the given packages, in a way that matches the release.
  *
- * Public packages are expected as publications and tagged private packages as tags only.
+ * Public packages are expected as publications and tagged private packages as tags only; without `tags`, for `changeset publish --no-git-tag`, tags are not expected.
+ * `local` tells whether the packages are published from this machine.
  * Returns the publish plan, which includes the npm dist-tags.
  */
 async function assertPublishable(
@@ -883,6 +894,7 @@ async function assertPublishable(
   workspace: Workspace,
   packages: PackageRelease[],
   cwd: string,
+  { local = workspace.publisher.mode === "local", tags = true } = {},
 ) {
   const { project } = workspace
   const publicPackages = packages.filter(entry => !entry.private)
@@ -896,10 +908,8 @@ async function assertPublishable(
     if (publishConfig.directory !== undefined) {
       throw new ReleaseError(`${where}: publishConfig.directory is not supported.`)
     }
-    if (publishConfig.provenance === true && workspace.publisher.mode === "local") {
-      throw new ReleaseError(
-        `${where}: npm generates provenance only in CI. Publish from GitHub Actions, or remove \`"provenance": true\` from publishConfig.`,
-      )
+    if (local) {
+      assertNoProvenanceRequest(manifest, where)
     }
     for (const [key, value] of Object.entries(publishConfig)) {
       if (
@@ -927,11 +937,15 @@ async function assertPublishable(
   await assertPackageRegistries(ctx, project, publicPackages)
 
   const publishPlan = await readPublishPlan(ctx, cwd)
-  const actual = new Set(publishPlan.map(entry => `${entry.kind} ${entry.name}@${entry.version}`))
+  const actual = new Set(
+    publishPlan
+      .filter(entry => tags || entry.kind === "publish")
+      .map(entry => `${entry.kind} ${entry.name}@${entry.version}`),
+  )
   const expected = new Set(
-    packages.map(
-      entry => `${entry.private ? "tag-only" : "publish"} ${entry.name}@${entry.version}`,
-    ),
+    packages
+      .filter(entry => tags || !entry.private)
+      .map(entry => `${entry.private ? "tag-only" : "publish"} ${entry.name}@${entry.version}`),
   )
   const unexpected = [...actual].filter(entry => !expected.has(entry))
   const missing = [...expected].filter(entry => !actual.has(entry))
@@ -941,7 +955,9 @@ async function assertPublishable(
         "`changeset publish` would not publish exactly this release:",
         ...unexpected.map(entry => `  - unexpected: ${entry}`),
         ...missing.map(entry => `  - missing: ${entry}`),
-        "Unpublished versions of other packages must be released first or made private.",
+        ...(unexpected.length > 0
+          ? ["Unpublished versions of other packages must be released first or made private."]
+          : []),
       ].join("\n"),
     )
   }
@@ -968,21 +984,14 @@ async function runReleaseCheck(ctx: Context, workspace: Workspace) {
  */
 async function awaitUserBeforePublishing(
   ctx: Context,
-  workspace: Workspace,
-  packages: PackageRelease[],
+  publications: LocalPublications | null,
   checksStartedAt: number,
 ) {
-  const { publisher } = workspace
-  const publications = packages.filter(entry => !entry.private)
-  if (
-    publisher.mode !== "local" ||
-    publications.length === 0 ||
-    Date.now() - checksStartedAt < ctx.presenceTimeout
-  ) {
+  if (!publications || Date.now() - checksStartedAt < ctx.presenceTimeout) {
     return
   }
   // The output of the checks has pushed the summary away, so the message names the release again.
-  const message = `Press Enter to publish ${formatVersions(publications)} as ${publisher.npmUser}, Ctrl+C to cancel.`
+  const message = `Press Enter to publish ${formatVersions(publications.packages)} as ${publications.npmUser}, Ctrl+C to cancel.`
   if (!(await ctx.waitForUser(message))) {
     throw new ReleaseError("Release cancelled.")
   }
@@ -1061,11 +1070,13 @@ async function previewRelease(
         getTagged(versioned.releases),
         tree,
       )
-      await assertPublisherAccess(ctx, workspace, versioned.releases, getWorkTreeFiles(tree).read, {
-        resumed: false,
-        only,
-        pending,
-      })
+      const localPublications = await assertPublisherAccess(
+        ctx,
+        workspace,
+        versioned.releases,
+        getWorkTreeFiles(tree).read,
+        { login: false },
+      )
       // The node_modules symlink is not ignored by a `node_modules/` pattern, which matches only directories.
       await readCommand(ctx, "git", ["add", "--all"], { cwd: tree })
       await readCommand(ctx, "git", ["reset", "--quiet", "--", "node_modules"], { cwd: tree })
@@ -1075,6 +1086,7 @@ async function previewRelease(
         ...pending,
         ...versioned,
         publishPlan,
+        localPublications,
         diffStat,
         ciCommit: head,
       }
@@ -1142,7 +1154,7 @@ async function resumeRelease(ctx: Context, workspace: Workspace, options: Releas
 }
 
 /**
- * Finishes an incomplete release with the publishing workflow: follows a run that is already in progress, or pushes the release commit when needed and dispatches a new run.
+ * Finishes an incomplete release with the publishing workflow: follows a run that is already in progress, or pushes the release commit when needed, publishes the first versions of packages that are not on npm yet from this machine, and dispatches a new run.
  *
  * Never dispatches while a run is in progress, since it may be publishing this release.
  */
@@ -1162,42 +1174,84 @@ async function resumeOnGitHub(
   }
   const unpublished = state.packages.filter(entry => !entry.published)
   // The workflow publishes the release commit, so its files decide.
-  await assertPublisherAccess(
+  const localPublications = await assertPublisherAccess(
     ctx,
     workspace,
     unpublished,
     path => readFileAtRevision(ctx, state.commit, path),
-    { resumed: true },
+    { login: !options.dryRun },
   )
+  // This machine publishes from its work tree.
+  if (localPublications) {
+    await assertWorkTreeAtCommit(ctx, state.commit)
+  }
   // An unpushed release commit becomes the tip once pushed.
   if (state.pushed) {
     await assertBranchAtRelease(ctx, workspace, state)
   }
   if (options.dryRun) {
-    ctx.log(
-      `\nDry run: nothing was changed. A release would ${state.pushed ? "" : `push the release commit to ${workspace.upstream.name} and `}dispatch ${publishWorkflowFile}.`,
-    )
+    const steps = [
+      ...(state.pushed ? [] : [`push the release commit to ${workspace.upstream.name}`]),
+      ...(localPublications
+        ? [`publish ${formatVersions(localPublications.packages)} as ${localPublications.npmUser}`]
+        : []),
+      `dispatch ${publishWorkflowFile}`,
+    ]
+    ctx.log(`\nDry run: nothing was changed. A release would ${steps.join(", then ")}.`)
     return
   }
-  if (!(await ctx.confirm(`Finish the release "${state.subject}" with GitHub Actions?`))) {
+  // The question names the publications from this machine, which the state above does not tell apart.
+  const question = localPublications
+    ? `Finish the release "${state.subject}": publish ${formatVersions(localPublications.packages)} to npm as ${localPublications.npmUser}, then dispatch ${publishWorkflowFile}?`
+    : `Finish the release "${state.subject}" with GitHub Actions?`
+  if (!(await ctx.confirm(question))) {
     throw new ReleaseError("Release cancelled.")
   }
-  await publishOnGitHub(ctx, workspace, state)
+  if (localPublications) {
+    const checksStartedAt = Date.now()
+    if (workspace.project.hasReleaseCheck) {
+      try {
+        await runReleaseCheck(ctx, workspace)
+      } catch (error) {
+        await restoreWorkTree(ctx)
+        throw error
+      }
+    }
+    await awaitUserBeforePublishing(ctx, localPublications, checksStartedAt)
+  }
+  await publishOnGitHub(ctx, workspace, state, localPublications)
 }
 
 /**
- * Pushes the release commit when needed and dispatches the publishing workflow, which publishes the packages, pushes the tags, and creates the GitHub Releases; then follows its run.
+ * Pushes the release commit when needed, publishes the first versions of packages from this machine, if any, and dispatches the publishing workflow, which publishes the other packages, pushes the tags, and creates the GitHub Releases; then follows its run.
  *
  * Once dispatched, the release no longer depends on this run: following the workflow is only a convenience.
  */
-async function publishOnGitHub(ctx: Context, workspace: Workspace, state: ReleaseState) {
+async function publishOnGitHub(
+  ctx: Context,
+  workspace: Workspace,
+  state: ReleaseState,
+  localPublications: LocalPublications | null,
+) {
   const { upstream, repo } = workspace
-  const run = await withResumeAdvice(workspace, state, async () => {
+  // No run of the workflow can finish the release before the dispatch.
+  const run = await withResumeAdvice(workspace, state, { dispatched: false }, async () => {
     if (!state.pushed) {
       logStep(ctx, `Pushing the release commit to ${upstream.remote}`)
       await pushCommit(ctx, upstream, state.commit)
     }
     await assertBranchAtRelease(ctx, workspace, state)
+    if (localPublications) {
+      const { packages } = localPublications
+      await publishFirstVersions(ctx, workspace, state, packages)
+      // Publishing and waiting for npm take a while, during which the base branch can move past the release commit.
+      await assertBranchAtRelease(ctx, workspace, {
+        ...state,
+        packages: state.packages.map(entry =>
+          packages.some(({ name }) => name === entry.name) ? { ...entry, published: true } : entry,
+        ),
+      })
+    }
     return dispatchPublication(
       ctx,
       repo,
@@ -1213,7 +1267,79 @@ async function publishOnGitHub(ctx: Context, workspace: Workspace, state: Releas
     )
     return
   }
-  await withResumeAdvice(workspace, state, () => watchPublishRun(ctx, repo, run))
+  await withResumeAdvice(workspace, state, { dispatched: true }, () =>
+    watchPublishRun(ctx, repo, run),
+  )
+}
+
+/**
+ * Publishes from this machine, without tags, the first versions of packages of a pushed release, before the publishing workflow publishes the others, and waits until npm shows them.
+ *
+ * Marks the other unpublished packages of the release private while `changeset publish` runs, since it publishes every unpublished version.
+ * The workflow skips the versions that npm shows, and creates the tags of every package.
+ */
+async function publishFirstVersions(
+  ctx: Context,
+  workspace: Workspace,
+  state: ReleaseState,
+  packages: PackageRelease[],
+) {
+  // Checked right before publishing, since Git hooks of the push can change the work tree.
+  await assertWorkTreeAtCommit(ctx, state.commit)
+  await assertNoActivePublishRun(ctx, workspace)
+  const others = state.packages.filter(
+    entry =>
+      !entry.published && !entry.private && !packages.some(({ name }) => name === entry.name),
+  )
+  await withPrivatePackages(
+    ctx.cwd,
+    others.map(entry => entry.dir),
+    async () => {
+      await assertPublishable(ctx, workspace, packages, ctx.cwd, { local: true, tags: false })
+      // Checked last before publishing: npm may have started to show a package since the confirmation, which the workflow then publishes with trusted publishing.
+      const newPackages = await listNewPackages(ctx, packages)
+      const shown = packages.filter(entry => !newPackages.includes(entry))
+      if (shown.length > 0) {
+        throw new ReleaseError(
+          `npm now shows ${shown.map(entry => entry.name).join(", ")}, so the release does not publish ${shown.length === 1 ? "it" : "them"} from your machine. Check the remaining steps with \`changesets-release --resume --dry-run\`.`,
+        )
+      }
+      logStep(ctx, `Publishing ${formatVersions(packages)} to npm`)
+      const result = await publishPackages(ctx, { disableProvenance: true, gitTag: false })
+      if (!result.succeeded) {
+        throw new ReleaseError(
+          "`changeset publish` failed. Some versions may have reached npm anyway; resuming checks npm first.",
+        )
+      }
+    },
+  )
+  await awaitNpmVersions(ctx, packages)
+}
+
+/** Maximum number of registry checks for a just-published version; npm may hide a new version for several minutes while it scans it. */
+const npmVersionPolls = 30
+
+/** Waits until npm shows package versions that this run has published, and fails when it does not show them in time. */
+async function awaitNpmVersions(ctx: Context, packages: PackageRelease[]) {
+  let missing = packages
+  for (let poll = 1; ; poll++) {
+    const shown = await Promise.all(
+      missing.map(entry => isVersionPublished(ctx, entry.name, entry.version)),
+    )
+    missing = missing.filter((_, index) => !shown[index])
+    if (missing.length === 0) {
+      return
+    }
+    if (poll >= npmVersionPolls) {
+      throw new ReleaseError(
+        `npm does not show ${formatVersions(missing)} after \`changeset publish\`. If it was just published, wait a few minutes before resuming.`,
+      )
+    }
+    if (poll === 1) {
+      logDetail(ctx, `Waiting for npm to show ${formatVersions(missing)}`)
+    }
+    await delay(ctx, ctx.pollInterval)
+  }
 }
 
 /**
@@ -1315,7 +1441,7 @@ export async function publishFromWorkflow(ctx: Context, commit: string) {
       )
     }
     await assertPublisherAccess(ctx, workspace, state.packages, getWorkTreeFiles(ctx.cwd).read, {
-      resumed: true,
+      login: false,
     })
   }
   // Changesets and the release create annotated tags, which need a tagger.
@@ -1486,10 +1612,14 @@ async function finishRelease(
       }
       await assertPublishable(ctx, workspace, expectedPublication, ctx.cwd)
       if (resumed) {
-        await assertPublisherAccess(ctx, workspace, unpublished, getWorkTreeFiles(ctx.cwd).read, {
-          resumed: true,
-        })
-        await awaitUserBeforePublishing(ctx, workspace, unpublished, checksStartedAt)
+        const localPublications = await assertPublisherAccess(
+          ctx,
+          workspace,
+          unpublished,
+          getWorkTreeFiles(ctx.cwd).read,
+          { login: true },
+        )
+        await awaitUserBeforePublishing(ctx, localPublications, checksStartedAt)
       }
     }
 
@@ -1577,25 +1707,36 @@ async function finishRelease(
 async function withResumeAdvice<T>(
   workspace: Workspace,
   state: ReleaseState,
+  options: { dispatched: boolean },
   step: () => Promise<T>,
 ) {
   try {
     return await step()
   } catch (error) {
-    throw addResumeAdvice(workspace, state, error)
+    throw addResumeAdvice(workspace, state, error, options)
   }
 }
 
-/** Adds to a release failure after the release commit how to finish the release; returns other errors unchanged. */
-function addResumeAdvice(workspace: Workspace, state: ReleaseState, error: unknown) {
+/**
+ * Adds to a release failure after the release commit how to finish the release; returns other errors unchanged.
+ *
+ * In GitHub mode, re-running the workflow is advised only when `dispatched` tells that this run has dispatched it.
+ */
+function addResumeAdvice(
+  workspace: Workspace,
+  state: ReleaseState,
+  error: unknown,
+  { dispatched = true }: { dispatched?: boolean } = {},
+) {
   if (!(error instanceof ReleaseError)) {
     return error
   }
+  const resume = `run \`${workspace.resumeCommand}\``
   const advice =
     workspace.publisher.mode === "local"
-      ? `run \`${workspace.resumeCommand}\` to finish it`
+      ? `${resume} to finish it`
       : workspace.publisher.mode === "github"
-        ? `run \`${workspace.resumeCommand}\` or re-run the publishing workflow to finish it`
+        ? `${resume}${dispatched ? " or re-run the publishing workflow" : ""} to finish it`
         : "re-run the publishing workflow to finish it"
   return new ReleaseError(
     `${error.message}\n\nThe release "${state.subject}" is incomplete. Fix the problem and ${advice}.`,
@@ -1695,10 +1836,21 @@ function printSummary(ctx: Context, workspace: Workspace, summary: ReleaseSummar
       .join("\n\n"),
   )
   ctx.log(`\n${styleText("bold", "Changes:")}\n${indent(summary.diffStat, 2)}`)
+  const { localPublications } = summary
+  const isLocal = (entry: PublishPlanEntry) =>
+    localPublications?.packages.some(({ name }) => name === entry.name) ?? false
+  const formatPublications = (entries: PublishPlanEntry[]) =>
+    entries.map(entry => `${entry.name}@${entry.version} (${entry.tag})`).join(", ")
+  const localSteps = localPublications
+    ? [
+        `Publish to npm as ${localPublications.npmUser}: ${formatPublications(publications.filter(isLocal))}`,
+      ]
+    : []
+  const trustedPublications = publications.filter(entry => !isLocal(entry))
   const publicationSteps = [
-    ...(publications.length > 0
+    ...(publisher.mode !== "local" && trustedPublications.length > 0
       ? [
-          `Publish to npm ${formatPublisher(publisher)}: ${publications.map(entry => `${entry.name}@${entry.version} (${entry.tag})`).join(", ")}`,
+          `Publish to npm ${formatTrustedPublishing(publisher)}: ${formatPublications(trustedPublications)}`,
         ]
       : []),
     ...(tagged.length > 0
@@ -1716,10 +1868,16 @@ function printSummary(ctx: Context, workspace: Workspace, summary: ReleaseSummar
   ]
   ctx.log(`\n${styleText("bold", "Steps:")}`)
   if (publisher.mode === "github") {
-    ctx.log(formatList([...steps, `Dispatch ${publishWorkflowFile} on GitHub Actions to:`]))
+    ctx.log(
+      formatList([
+        ...steps,
+        ...localSteps,
+        `Dispatch ${publishWorkflowFile} on GitHub Actions to:`,
+      ]),
+    )
     ctx.log(indent(formatList(publicationSteps), 2))
   } else {
-    ctx.log(formatList([...steps, ...publicationSteps]))
+    ctx.log(formatList([...steps, ...localSteps, ...publicationSteps]))
   }
   // After the steps, right before the confirmation, so that the output above does not push it away.
   if (summary.unreleasedRangeChanges.length > 0) {
@@ -1730,18 +1888,14 @@ function printSummary(ctx: Context, workspace: Workspace, summary: ReleaseSummar
   }
 }
 
-/** Describes how a release publishes to npm, completing "Publish to npm …" in the steps of a release. */
-function formatPublisher(publisher: Publisher) {
-  switch (publisher.mode) {
-    case "local":
-      return `as ${publisher.npmUser}`
-    case "github":
-      return publisher.provenance
-        ? "with provenance"
-        : "with trusted publishing, without provenance from a private repository"
-    case "workflow":
-      return "with trusted publishing"
+/** Describes how a release publishes to npm with trusted publishing, completing "Publish to npm …" in the steps of a release. */
+function formatTrustedPublishing(publisher: Exclude<Publisher, { mode: "local" }>) {
+  if (publisher.mode === "workflow") {
+    return "with trusted publishing"
   }
+  return publisher.provenance
+    ? "with provenance"
+    : "with trusted publishing, without provenance from a private repository"
 }
 
 /** Formats the annotation of a GitHub Release in the steps of a release: a prerelease, or the release that takes the `Latest` mark. */

@@ -8,7 +8,7 @@ npx changesets-release
 
 You keep writing `.changeset/*.md` files and choosing SemVer bumps as usual.
 When you want to release, you run one command in your terminal: it prepares the release, shows it, and after your confirmation commits and pushes it.
-Then it publishes the packages either from your machine, authenticating to npm interactively with 2FA, or from a GitHub Actions workflow with [npm trusted publishing](https://docs.npmjs.com/trusted-publishers) and [provenance](https://docs.npmjs.com/generating-provenance-statements).
+Then it publishes the packages either from your machine, authenticating to npm interactively with 2FA, or from a GitHub Actions workflow with [npm trusted publishing](https://docs.npmjs.com/trusted-publishers) and [provenance](https://docs.npmjs.com/generating-provenance-statements), except the first versions of new packages, which it publishes from your machine.
 
 changesets-release is a thin layer over your project's own `@changesets/cli` 3:
 
@@ -31,6 +31,7 @@ It checks Git, npm, and GitHub before publishing and can finish an interrupted r
 - To publish from your machine, an npm account with publish access to the packages.
   For a new package in an organization scope, create the npm organization first.
 - To publish from GitHub Actions, the [publishing workflow](#publish-from-github-actions) and a trusted publisher for each package on npm.
+  For the [first version of a new package](#publish-a-new-package), you also need an npm account that can publish it from your machine.
 
 ## Install
 
@@ -200,6 +201,7 @@ changesets-release marks the GitHub Releases of prerelease versions as prereleas
 
 To publish with [npm provenance](https://docs.npmjs.com/generating-provenance-statements), add the publishing workflow to your repository.
 You still release with `npx changesets-release` from your terminal: it prepares, confirms, commits, and pushes the release as usual, and then starts the workflow, which publishes the packages to npm with [trusted publishing](https://docs.npmjs.com/trusted-publishers), pushes the tags, and creates the GitHub Releases.
+Only the [first version of a new package](#publish-a-new-package) is published from your machine, before the workflow starts.
 
 ```text
 Steps:
@@ -218,7 +220,7 @@ If the CLI can no longer read the run status, it exits successfully.
 Follow the link to check the result on GitHub.
 The release no longer depends on your machine once the workflow has started: you can press Ctrl+C or close the terminal, and the workflow continues.
 
-Provenance links each published version to the workflow run and the commit it was built from, so that users can verify where a package comes from.
+Provenance links each version that the workflow publishes to the workflow run and the commit it was built from, so that users can verify where a package comes from.
 It does not tell whether the package is free of vulnerabilities or malicious code.
 
 ### Add the publishing workflow
@@ -277,7 +279,8 @@ Do not add npm tokens to the workflow or to `.npmrc`: npm would publish with the
 The workflow stops when npm, or pnpm in a pnpm project, is logged in to the registry with a token.
 
 Keep the checkout without `ref`: the workflow checks out the commit of the branch that it was dispatched on, and installs and runs its code.
-changesets-release dispatches it on the base branch right after pushing the release commit, so that npm provenance names the release commit.
+changesets-release dispatches it on the base branch after pushing the release commit and publishing the first versions of new packages, if any.
+While the workflow has versions left to publish, the base branch must still be at the release commit when it is dispatched, so that npm provenance names the release commit.
 The `commit` input only tells the workflow which release to finish; the workflow stops unless it is the newest release commit on the base branch.
 
 ### Configure trusted publishing
@@ -296,7 +299,7 @@ In a monorepo, run it for every published package.
 Alternatively, add the trusted publisher in the settings of the package on npmjs.com, with the same repository, workflow filename, and environment.
 
 npm generates provenance for packages from a public repository.
-Set `repository` in the `package.json` of each published package to your GitHub repository, such as `"repository": "github:alice/my-package"`; changesets-release checks it before the release, because npm rejects provenance from another repository.
+Set `repository` in the `package.json` of each published package to your GitHub repository, such as `"repository": "github:alice/my-package"`; changesets-release checks it before each release that publishes the package with provenance, because npm rejects provenance from another repository.
 From a private repository, npm publishes without provenance.
 
 Note: anyone who can push a branch can dispatch the workflow on it and run the code of that branch.
@@ -304,25 +307,27 @@ To let only the base branch publish, limit the deployment branches of the `npm` 
 
 ### Publish a new package
 
-npm configures trusted publishers only for packages that already exist, so publish the first version of a new package from your machine:
+npm configures trusted publishers only for packages that already exist, so changesets-release publishes the first version of a new package from your machine, with your npm login and without provenance.
+Release as usual; the confirmation lists it before the workflow:
 
-```sh
-npx changesets-release --publish=local
+```text
+Steps:
+  - Commit "Release @acme/core@2.1.0, @acme/new-package@0.1.0"
+  - Push it to origin/main
+  - Publish to npm as alice: @acme/new-package@0.1.0 (latest)
+  - Dispatch publish.yml on GitHub Actions to:
+    - Publish to npm with provenance: @acme/core@2.1.0 (latest)
+    - Create and push tags @acme/core@2.1.0, @acme/new-package@0.1.0
+    - Create GitHub Releases in alice/acme: @acme/core@2.1.0, @acme/new-package@0.1.0
 ```
 
-Then [configure trusted publishing](#configure-trusted-publishing) of the package right before its next release, and release as usual.
-In a monorepo, do this whenever a release has a new package: changesets-release stops before the confirmation when a package of the release is not on npm yet.
-To publish the other packages from GitHub Actions, first [release the new package with `--only`](#release-some-of-the-packages):
-
-```sh
-npx changesets-release --publish=local --only @acme/new-package
-```
-
-The confirmation lists the packages that this release publishes from your machine, including those that Changesets also bumps.
+After pushing the release commit, changesets-release publishes the new packages, waits until npm shows them, and then starts the workflow, which publishes the other packages and creates the tags and GitHub Releases of all of them.
+Until the workflow has published the other packages, usually for about a minute, a new package can depend on a version of another package of the release that is not on npm yet, and installing it fails; if the workflow fails, this lasts until you [finish the release](#finish-an-interrupted-release).
+Then [configure trusted publishing](#configure-trusted-publishing) of the new package right before its next release.
 
 ### Choose where to publish
 
-changesets-release publishes from GitHub Actions when the repository has the publishing workflow: `.github/workflows/publish.yml` that runs `changesets-release ci`.
+changesets-release publishes from GitHub Actions when the repository has the publishing workflow: `.github/workflows/publish.yml` that runs `changesets-release ci`; it publishes only the [first versions of new packages](#publish-a-new-package) from your machine.
 Otherwise, it publishes from your machine.
 Choose explicitly with `--publish=github` or `--publish=local`.
 
@@ -369,7 +374,7 @@ npx changesets-release --resume
 After you confirm, it performs only the remaining steps, without bumping versions again.
 Combine it with `--dry-run` to see the state without changing anything.
 
-With the publishing workflow, `--resume` pushes the release commit if needed and starts the workflow again, which skips what is done.
+With the publishing workflow, `--resume` pushes the release commit if needed, publishes the first versions of new packages from your machine, and starts the workflow, which skips what is done.
 When the workflow is already running, `--resume` waits for that run instead.
 You can also re-run a failed workflow run on GitHub.
 When the base branch has moved past the release commit before all its versions are on npm, a new run would publish them with provenance of another commit, so `--resume` does not start one.
@@ -437,3 +442,5 @@ It also skips other commits whose message starts with `Release `.
 - npm trusted publishing does not support self-hosted runners.
 - The repository must have no other release automation that publishes the same versions.
 - `--only` does not work in Changesets prerelease mode.
+- When a release from GitHub Actions publishes the first versions of new packages from your machine and leaves other packages to the workflow, the working tree has uncommitted changes while the new packages are published: the other packages are marked private, and `.changeset/config.json` sets `privatePackages`.
+  Lifecycle scripts of the new packages, such as `prepublishOnly`, must not require a clean working tree or select packages by their `private` field.

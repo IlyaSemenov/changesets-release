@@ -3,6 +3,7 @@
 ## Overview
 
 changesets-release is a CLI that releases a Changesets repository, a single package or a monorepo, from the terminal: it versions the packages and pushes the release commit, then publishes them to npm, pushes the tags, and creates GitHub Releases, either itself or through the publishing workflow on GitHub Actions, which runs `changesets-release ci <commit>` with npm trusted publishing.
+In GitHub mode, the local CLI publishes the first version of each new package before dispatching the workflow.
 
 Read [README.md](README.md) completely before changing the command-line interface, package behavior, supported runtimes, or user documentation.
 
@@ -35,7 +36,9 @@ Do not catalog files or restate information evident from their names and locatio
 - Run `assertPublishable` right before every `changeset publish`, not only before the confirmation: Git hooks and `--resume` can change what is published.
 - Check the publisher once per run with `assertPublisherAccess`: before the confirmation, or before the push or dispatch in `--resume`.
 - Publish from GitHub Actions by default when HEAD has the publishing workflow, detected by `hasPublishWorkflow`, and from the machine otherwise, unless `--publish` says otherwise; never fall back from one mode to the other, and put `--publish` into the advice to resume when it differs from the default.
-- In GitHub mode, end the local run with dispatching the workflow: never publish, tag, or create GitHub Releases locally, and treat following the run as a convenience that Ctrl+C stops without failing.
+- In GitHub mode, end the local run with dispatching the workflow, and treat following the run as a convenience that Ctrl+C stops without failing; never tag or create GitHub Releases locally.
+- In GitHub mode, publish locally only the first versions of packages that are not on npm yet, which trusted publishing cannot publish: after pushing the release commit, without tags, and before dispatching the workflow, once npm shows them.
+- Publish some of the unpublished packages with `changeset publish --no-git-tag` while `withPrivatePackages` marks the others private; do not publish `changeset pack` artifacts, which skip `prepublishOnly`.
 - Add new inputs of the publishing workflow as optional, and pass them in `optionalInputs` of `dispatchWorkflow`, so that workflows copied from an older template keep working.
 - Run the same `inspectRelease` and `finishRelease` in the publishing workflow through `publishFromWorkflow`; do not implement release steps in the workflow template.
 - Never let the workflow check out the `commit` input: its install step runs code of the checkout while the job can publish, and commits of forks are reachable by hash. The workflow runs at `GITHUB_SHA`, finishes only the release of the newest release commit on the remote base branch, and publishes only when `GITHUB_SHA` is that commit, since npm provenance names `GITHUB_SHA`.
@@ -60,6 +63,7 @@ Do not catalog files or restate information evident from their names and locatio
 - `changeset status --output` reports the highest version of a `fixed` group as `oldVersion` of its packages; read the version of a package from its manifest.
 - `changeset publish` publishes every unpublished version of a public package, not only the versions of the current release.
 - Changesets 3 defaults `privatePackages` to `{ version: false, tag: false }`, and a boolean sets both.
+- Without `privatePackages.version`, Changesets skips private packages and rejects the config when a package that it does not skip depends on one.
 - `CHANGESETS_OUTPUT` of `changeset publish` reports only `git-tag` events, written after successful publications and for tagged private packages; it does not report failed or skipped publications.
 - npm may report a just-published version as missing for several minutes, and then rejects publishing it again as already published.
 - `git ls-remote` lists the peeled `^{}` ref of an annotated tag only when it is requested explicitly.

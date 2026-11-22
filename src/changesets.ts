@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rename, rm, rmdir } from "node:fs/promises"
+import { mkdtemp, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 
@@ -180,6 +180,55 @@ export async function withoutChangesets<T>(
   }
 }
 
+/**
+ * Runs a callback with packages of a work tree marked private, so that `changeset publish` skips them, and restores the changed files afterwards, also on failure.
+ *
+ * `dirs` are the package directories, relative to the work tree.
+ * Also sets `privatePackages` in the Changesets config: `version`, since Changesets otherwise skips private packages and rejects the config when a package that it does not skip, such as one being published, depends on one, and not `tag`, so that the publish plan has no tag-only entries for them.
+ * `--no-git-tag` keeps `changeset publish` from tagging the published packages.
+ * Fails after trying to restore every file when some of them cannot be restored, naming them.
+ */
+export async function withPrivatePackages<T>(
+  cwd: string,
+  dirs: string[],
+  callback: () => Promise<T>,
+) {
+  type JsonObject = Record<string, unknown>
+  const edits: Array<{ path: string; edit: (json: JsonObject) => JsonObject }> = dirs.map(dir => ({
+    path: join(cwd, dir, "package.json"),
+    edit: json => ({ ...json, private: true }),
+  }))
+  if (edits.length > 0) {
+    edits.push({
+      path: join(cwd, ".changeset", "config.json"),
+      edit: json => ({ ...json, privatePackages: { version: true, tag: false } }),
+    })
+  }
+  const originals: Array<{ path: string; content: string }> = []
+  try {
+    for (const { path, edit } of edits) {
+      const content = await readFile(path, "utf8")
+      // Recorded before writing, so that a failed write is restored too.
+      originals.push({ path, content })
+      const json = edit(JSON.parse(content) as JsonObject)
+      await writeFile(path, `${JSON.stringify(json, null, 2)}\n`)
+    }
+    return await callback()
+  } finally {
+    const unrestored: string[] = []
+    for (const { path, content } of originals) {
+      try {
+        await writeFile(path, content)
+      } catch (error) {
+        unrestored.push(`${path}: ${(error as Error).message}`)
+      }
+    }
+    if (unrestored.length > 0) {
+      throw new ReleaseError(`Could not restore files:\n${formatList(unrestored)}`)
+    }
+  }
+}
+
 /** Returns what `changeset publish` would publish and tag from a work tree, as reported by `changeset publish-plan`. */
 export async function readPublishPlan(ctx: Context, cwd = ctx.cwd): Promise<PublishPlanEntry[]> {
   const plan = await withTempFile("publish-plan.json", async output => {
@@ -236,17 +285,18 @@ export function filterVersionOutput(output: string) {
 }
 
 /**
- * Publishes unpublished package versions from the work tree with `changeset publish`, which also tags them.
+ * Publishes unpublished package versions from the work tree with `changeset publish`, which also tags them unless `gitTag` is false.
  *
  * Resolves to the command status and the tags that Changesets reports creating: after successful publications, and for tagged private packages.
  * With `disableProvenance`, overrides npm settings that request provenance, which npm can only generate in CI; otherwise npm decides, and trusted publishing generates provenance for a public repository.
  */
 export async function publishPackages(
   ctx: Context,
-  { disableProvenance }: { disableProvenance: boolean },
+  { disableProvenance, gitTag = true }: { disableProvenance: boolean; gitTag?: boolean },
 ) {
   return withTempFile("output.ndjson", async output => {
-    const result = await runCommandWithStatus(ctx, changesetBin, ["publish"], {
+    const args = gitTag ? ["publish"] : ["publish", "--no-git-tag"]
+    const result = await runCommandWithStatus(ctx, changesetBin, args, {
       env: {
         CHANGESETS_OUTPUT: output,
         ...(disableProvenance ? { NPM_CONFIG_PROVENANCE: "false" } : {}),
