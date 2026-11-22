@@ -1,5 +1,13 @@
 # changesets-release
 
+## 2.3.0
+
+### Minor Changes
+
+- 0a9b4ea: With `--only`, also apply the pending changesets of the packages that Changesets releases along with the selected ones.
+- e92da51: Publish the first versions of new packages from your machine and the other packages from GitHub Actions in one release.
+- 241e745: With `--only`, apply a changeset that also bumps other packages to the selected packages, and keep it pending for the others.
+
 ## 2.2.0
 
 ### Minor Changes
