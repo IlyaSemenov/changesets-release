@@ -10,7 +10,6 @@ import {
   type ChangesetSelection,
   isInPrereleaseMode,
   listBumpedPackages,
-  type PendingChangeset,
   type PlannedRelease,
   planRelease,
   publishPackages,
@@ -136,15 +135,15 @@ export interface ReleaseOptions {
   dryRun?: boolean
   /** Finishes the release of the newest release commit, if it is incomplete, instead of starting a new one. */
   resume?: boolean
-  /** Releases only these packages, with the packages that Changesets also bumps, and leaves the changesets of the others for a later release. */
+  /** Releases only these packages and the packages that Changesets also bumps, with their changesets, and leaves the changesets of the others for a later release. */
   only?: string[]
 }
 
 /** Package releases planned from the pending changesets of a release, with the changesets that a release of some of the packages leaves pending entirely or partly. */
 interface PendingRelease extends ChangesetSelection {
   plan: PlannedRelease[]
-  /** Pending changesets of the release, as reported by `changeset status`. */
-  changesets: PendingChangeset[]
+  /** Packages outside `--only` that Changesets releases along with the selected ones, whose pending changesets the release also applies. */
+  implied: string[]
   /** Whether the project is in Changesets prerelease mode. */
   prerelease: boolean
 }
@@ -420,6 +419,7 @@ async function startRelease(ctx: Context, workspace: Workspace, options: Release
  * Plans the release of the pending changesets in a work tree, and fails when they release nothing.
  *
  * With `only`, plans the release of the changesets of these packages: defers the other changesets, and applies a changeset that also bumps other packages only to the selected packages.
+ * Adds to the selection each package that Changesets releases along with the selected ones and that has a pending changeset that requests a version bump for it, and plans again until the plan adds no such package: the new version of the package includes the changes that its pending changesets describe.
  */
 async function planPendingRelease(
   ctx: Context,
@@ -433,11 +433,28 @@ async function planPendingRelease(
     throw new ReleaseError("`--only` cannot be used in Changesets prerelease mode.")
   }
   const status = await planRelease(ctx, cwd)
-  const selection = only ? selectChangesets(status.changesets, only) : { deferred: [], split: [] }
-  const { releases: plan, changesets } =
-    selection.deferred.length > 0 || selection.split.length > 0
-      ? await withSelectedChangesets(cwd, selection, () => planRelease(ctx, cwd))
-      : status
+  let selection: ChangesetSelection = { deferred: [], split: [] }
+  let plan = status.releases
+  const implied: string[] = []
+  // Each pass either stops or adds at least one package that is not selected yet.
+  while (only) {
+    selection = selectChangesets(status.changesets, [...only, ...implied])
+    const planned =
+      selection.deferred.length > 0 || selection.split.length > 0
+        ? await withSelectedChangesets(cwd, selection, () => planRelease(ctx, cwd))
+        : status
+    plan = planned.releases
+    const pending = new Set(
+      [...selection.deferred, ...selection.split.map(({ kept }) => kept)].flatMap(
+        listBumpedPackages,
+      ),
+    )
+    const added = plan.filter(entry => pending.has(entry.name)).map(entry => entry.name)
+    if (added.length === 0) {
+      break
+    }
+    implied.push(...added)
+  }
   // Changesets does not bump a package that its configuration ignores or a private package it does not version, even with a changeset.
   const unplanned = (only ?? []).filter(name => !plan.some(entry => entry.name === name))
   if (unplanned.length > 0) {
@@ -450,7 +467,7 @@ async function planPendingRelease(
       "No pending changesets release any package. Add one with `npx changeset` and commit it.",
     )
   }
-  return { plan, changesets, ...selection, prerelease }
+  return { plan, ...selection, implied: implied.toSorted(), prerelease }
 }
 
 /** Describes how HEAD differs from the remote base branch, or returns null when they are at the same commit. */
@@ -1815,6 +1832,11 @@ function printSummary(ctx: Context, workspace: Workspace, summary: ReleaseSummar
       })
       .join("\n"),
   )
+  if (summary.implied.length > 0) {
+    ctx.log(
+      `\nAlso applies the pending changesets of ${summary.implied.join(", ")}, which the release includes along with the selected packages.`,
+    )
+  }
   const kept = [...summary.deferred, ...summary.split.map(({ kept }) => kept)]
   const deferredPackages = [...new Set(kept.flatMap(listBumpedPackages))].toSorted()
   if (deferredPackages.length > 0) {

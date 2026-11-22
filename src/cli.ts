@@ -22,9 +22,9 @@ Options:
                     workflow .github/workflows/publish.yml, except the first versions
                     of new packages; github when that workflow runs
                     changesets-release ci, local otherwise
-  --only <package>  Release only this package, with the packages that Changesets
-                    also bumps, and leave the changesets of other packages
-                    pending; repeat for several
+  --only <package>  Release only this package and the packages that Changesets
+                    also bumps, with their changesets, and leave the changesets
+                    of other packages pending; repeat for several
   --dry-run         Show what a release would do without changing anything
   --resume          Finish an interrupted release
   -h, --help        Show this help

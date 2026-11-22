@@ -333,24 +333,136 @@ describe("release of some packages", () => {
     expect(fixture.git("status", "--porcelain", "--untracked-files=all")).toBe("")
   })
 
-  it("releases a dependent package that Changesets also bumps", async () => {
+  it.each([{ dryRun: false }, { dryRun: true }])(
+    "applies the changesets of a dependent package that Changesets also releases with %o",
+    async options => {
+      const fixture = createFixture({
+        monorepo: true,
+        packageManager: "pnpm",
+        packages: { "packages/beta": { dependencies: { alpha: "workspace:^1.0.0" } } },
+        changesets: {
+          breaking: changeset("major", "Change the API.", ["alpha"]),
+          feature: changeset("minor", "Add a feature.", ["@fixture/beta"]),
+        },
+      })
+      const result = await fixture.run({ ...options, only: ["alpha"] })
+      expect(result.error).toBeUndefined()
+      expect(result.output).toContain("  @fixture/beta 1.0.0 → 1.1.0 (minor)\n")
+      expect(result.output).toContain(
+        "Also applies the pending changesets of @fixture/beta, which the release includes along with the selected packages.",
+      )
+      expect(result.output).not.toContain("stay for a later release")
+      if (options.dryRun) {
+        return
+      }
+      expectPackageReleased(fixture, "packages/alpha", "2.0.0")
+      expectPackageReleased(fixture, "packages/beta", "1.1.0")
+      expect(fixture.read("packages/beta/CHANGELOG.md")).toContain("Add a feature.")
+      expect(fixture.git("ls-files", ".changeset/*.md")).toBe("")
+    },
+  )
+
+  it("applies a shared changeset to both the selected package and its dependent", async () => {
+    const fixture = createFixture({
+      monorepo: true,
+      packageManager: "pnpm",
+      packages: { "packages/beta": { dependencies: { alpha: "workspace:^1.0.0" } } },
+      changesets: { shared: changeset("major", "Change the API.", ["alpha", "@fixture/beta"]) },
+    })
+    const result = await fixture.run({ only: ["alpha"] })
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual(["Release alpha@2.0.0, @fixture/beta@2.0.0?"])
+    expect(fixture.read("packages/beta/CHANGELOG.md")).toContain("Change the API.")
+    expect(fixture.git("ls-files", ".changeset/*.md")).toBe("")
+  })
+
+  it("applies the changesets of a package that a newly applied changeset releases", async () => {
     const fixture = createFixture({
       monorepo: true,
       packageManager: "pnpm",
       packages: { "packages/beta": { dependencies: { alpha: "workspace:^1.0.0" } } },
       changesets: {
         breaking: changeset("major", "Change the API.", ["alpha"]),
-        feature: changeset("minor", "Add a feature.", ["@fixture/beta"]),
+        "beta-breaking": changeset("major", "Change the beta API.", ["@fixture/beta"]),
+        "example-fix": changeset("patch", "Fix the example.", [privatePackage.name]),
       },
+      changesetsConfig: {
+        privatePackages: { version: true, tag: false },
+        updateInternalDependencies: "minor",
+      },
+    })
+    // The example accepts the dependent patch of beta; applying the major changeset of beta brings the example into the next plan.
+    commitManifest(fixture, privatePackage.dir, {
+      dependencies: { "@fixture/beta": "workspace:^1.0.0" },
     })
     const result = await fixture.run({ only: ["alpha"] })
     expect(result.error).toBeUndefined()
     expect(result.output).toContain(
-      "  @fixture/beta 1.0.0 → 1.0.1 (patch, no changeset: depends on alpha@2.0.0)\n",
+      `Also applies the pending changesets of @fixture/beta, ${privatePackage.name}, which the release includes along with the selected packages.`,
     )
     expectPackageReleased(fixture, "packages/alpha", "2.0.0")
-    expectPackageReleased(fixture, "packages/beta", "1.0.1")
-    expect(fixture.git("ls-files", ".changeset/*.md")).toBe(".changeset/feature.md")
+    expectPackageReleased(fixture, "packages/beta", "2.0.0")
+    expect(fixture.read(`${privatePackage.dir}/CHANGELOG.md`)).toContain("Fix the example.")
+    expect(fixture.git("ls-files", ".changeset/*.md")).toBe("")
+  })
+
+  // Adding packages only, the selection keeps a package that a later plan no longer needs; the confirmation shows it.
+  it("keeps a package that only an earlier plan released", async () => {
+    const fixture = createFixture({
+      monorepo: true,
+      packageManager: "pnpm",
+      packages: { "packages/beta": { dependencies: { alpha: "workspace:^1.0.0" } } },
+      changesets: {
+        breaking: changeset("major", "Change the API.", ["alpha"]),
+        "beta-breaking": changeset("major", "Change the beta API.", ["@fixture/beta"]),
+        "example-fix": changeset("patch", "Fix the example.", [privatePackage.name]),
+      },
+      changesetsConfig: { privatePackages: { version: true, tag: false } },
+    })
+    // The range rejects the dependent patch of beta and accepts its major.
+    commitManifest(fixture, privatePackage.dir, {
+      dependencies: { "@fixture/beta": "workspace:1.0.0 || ^2.0.0" },
+    })
+    const result = await fixture.run({ only: ["alpha"] })
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual([
+      `Release alpha@2.0.0, @fixture/beta@2.0.0, ${privatePackage.name}@1.0.1?`,
+    ])
+    expect(fixture.git("ls-files", ".changeset/*.md")).toBe("")
+  })
+
+  it("applies the changesets of another package in the same fixed group", async () => {
+    const fixture = createFixture({
+      monorepo: true,
+      changesetsConfig: { fixed: [["alpha", "@fixture/beta"]] },
+    })
+    const result = await fixture.run({ only: ["alpha"] })
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual(["Release alpha@1.1.0, @fixture/beta@1.1.0?"])
+    expect(fixture.read("packages/beta/CHANGELOG.md")).toContain("Fix a bug.")
+    expect(fixture.git("ls-files", ".changeset/*.md")).toBe("")
+  })
+
+  it("keeps the entry of an unrelated package when a dependent uses a shared changeset", async () => {
+    const fixture = createFixture({
+      monorepo: true,
+      packageManager: "pnpm",
+      packages: { "packages/beta": { dependencies: { alpha: "workspace:^1.0.0" } } },
+      changesets: {
+        breaking: changeset("major", "Change the API.", ["alpha"]),
+        shared: changeset("minor", "Add a feature.", ["@fixture/beta", privatePackage.name]),
+      },
+      changesetsConfig: { privatePackages: { version: true, tag: false } },
+    })
+    // The example does not depend on alpha, so only the shared changeset could release it.
+    commitManifest(fixture, privatePackage.dir, { dependencies: {} })
+    const result = await fixture.run({ only: ["alpha"] })
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual(["Release alpha@2.0.0, @fixture/beta@1.1.0?"])
+    expect(result.output).toContain(
+      `.changeset/shared.md applies to @fixture/beta and stays for ${privatePackage.name}.`,
+    )
+    expect(fixture.git("ls-files", ".changeset/*.md")).toBe(".changeset/shared.md")
   })
 
   it("applies a mixed patch/none changeset and defers a none-only changeset", async () => {

@@ -188,8 +188,8 @@ npx changesets-release --only @acme/core
 ```
 
 Repeat `--only` for several packages.
-The release also includes the packages that Changesets bumps along with them, such as packages that depend on a released one; check them in the confirmation.
-A changeset that also bumps other packages applies to the named packages, and stays in the release commit with only the other packages for a later release.
+The release also includes the packages that Changesets bumps along with them, such as packages that depend on a released one, with their pending changesets; check them in the confirmation.
+If a changeset also bumps packages outside the release, the release commit keeps the file with just those packages for a later release.
 
 ### Prereleases
 

@@ -29,6 +29,7 @@ Do not catalog files or restate information evident from their names and locatio
 - Derive release progress from Git, npm, and GitHub in `inspectRelease`; do not persist release state.
 - Identify a release by its commit: the newest commit whose subject lists exactly the package versions it changes, in any order. Derive package directories from the `package.json` files that Git reports changed; do not discover workspaces.
 - Release some of the packages with `--only` around `changeset status` and `changeset version`: hide the changeset files that bump none of the selected packages, leave in a changeset that also bumps other packages only the entries of the selected packages, and after versioning write the entries of the other packages back to its file.
+  Add to the selection each package that Changesets releases anyway and that has a pending changeset that requests a version bump for it, and plan again until the selection stops growing.
   Do not use `changeset version --ignore`.
 - Find packages outside a release from the tracked `package.json` files, of the work tree or the release commit, and keep those that have the tag of their current version; do not parse `workspaces` or `pnpm-workspace.yaml`.
 - Keep every step after the release commit idempotent and skipped when `inspectRelease` reports it done, so that `--resume` and the main release run the same `finishRelease`.
