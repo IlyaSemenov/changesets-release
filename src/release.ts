@@ -1872,9 +1872,15 @@ function printSummary(ctx: Context, workspace: Workspace, summary: ReleaseSummar
     localPublications?.packages.some(({ name }) => name === entry.name) ?? false
   const formatPublications = (entries: PublishPlanEntry[]) =>
     entries.map(entry => `${entry.name}@${entry.version} (${entry.tag})`).join(", ")
+  const localEntries = publications.filter(isLocal)
+  // In GitHub mode, the machine publishes only the packages that trusted publishing cannot publish yet: say which and why.
+  const localTarget =
+    publisher.mode === "github"
+      ? `${localEntries.length === 1 ? "a new package" : "new packages"} to npm from this machine`
+      : "to npm"
   const localSteps = localPublications
     ? [
-        `Publish to npm as ${localPublications.npmUser}: ${formatPublications(publications.filter(isLocal))}`,
+        `Publish ${localTarget} as ${localPublications.npmUser}: ${formatPublications(localEntries)}`,
       ]
     : []
   const trustedPublications = publications.filter(entry => !isLocal(entry))

@@ -314,7 +314,7 @@ Release as usual; the confirmation lists it before the workflow:
 Steps:
   - Commit "Release @acme/core@2.1.0, @acme/new-package@0.1.0"
   - Push it to origin/main
-  - Publish to npm as alice: @acme/new-package@0.1.0 (latest)
+  - Publish a new package to npm from this machine as alice: @acme/new-package@0.1.0 (latest)
   - Dispatch publish.yml on GitHub Actions to:
     - Publish to npm with provenance: @acme/core@2.1.0 (latest)
     - Create and push tags @acme/core@2.1.0, @acme/new-package@0.1.0

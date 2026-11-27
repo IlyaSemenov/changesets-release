@@ -309,7 +309,7 @@ describe("preparing a release for GitHub Actions", () => {
       expect(result.output).toContain(
         [
           `  - Push it to origin/main`,
-          `  - Publish to npm as tester: ${packageName}@1.0.1 (latest)`,
+          `  - Publish a new package to npm from this machine as tester: ${packageName}@1.0.1 (latest)`,
           `  - Dispatch publish.yml on GitHub Actions to:`,
           `    - Create and push tag v1.0.1`,
           `    - Create GitHub Release in ${githubRepo}: v1.0.1`,
@@ -343,7 +343,7 @@ describe("preparing a release for GitHub Actions", () => {
       expect(result.error).toBeUndefined()
       expect(result.output).toContain(
         [
-          `  - Publish to npm as tester: @fixture/beta@1.1.0 (latest)`,
+          `  - Publish a new package to npm from this machine as tester: @fixture/beta@1.1.0 (latest)`,
           `  - Dispatch publish.yml on GitHub Actions to:`,
           `    - Publish to npm with provenance: alpha@2.0.0 (latest)`,
         ].join("\n"),
