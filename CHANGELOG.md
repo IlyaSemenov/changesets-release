@@ -1,5 +1,11 @@
 # changesets-release
 
+## 2.3.1
+
+### Patch Changes
+
+- c558724: Say in the confirmation of a release from GitHub Actions that the first versions of new packages are published from the machine.
+
 ## 2.3.0
 
 ### Minor Changes
