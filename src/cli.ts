@@ -104,7 +104,10 @@ async function main() {
     throw new ReleaseError(`--publish must be ${publishModes.join(" or ")}, not ${publish}.`)
   }
   if (!values["dry-run"] && !process.stdin.isTTY) {
-    throw new ReleaseError("A release needs an interactive terminal.")
+    // npm keeps `npm run release --dry-run` to itself, so the script starts a release.
+    throw new ReleaseError(
+      "A release needs an interactive terminal. To preview it, pass --dry-run, after `--` with `npm run`.",
+    )
   }
   await release(ctx, {
     publish: publish as PublishMode | undefined,
