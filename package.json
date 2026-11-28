@@ -1,6 +1,6 @@
 {
   "name": "changesets-release",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "description": "Release Changesets packages and monorepos on demand with one command, without a Version pull request: publish from your terminal or from GitHub Actions with npm provenance.",
   "keywords": [
     "changelog",

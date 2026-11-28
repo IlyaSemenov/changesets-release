@@ -1,5 +1,15 @@
 # changesets-release
 
+## 2.4.0
+
+### Minor Changes
+
+- d042372: Add `--yes` to release without confirmation or an interactive terminal, such as from a coding agent.
+
+### Patch Changes
+
+- 0a45354: Suggest `--dry-run` when a release is started without an interactive terminal.
+
 ## 2.3.1
 
 ### Patch Changes
