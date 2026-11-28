@@ -460,6 +460,31 @@ describe("abandoned release", () => {
     expect(fixture.git("rev-parse", "HEAD")).toBe(head)
   })
 
+  it("is not abandoned with --yes", async () => {
+    const fixture = await createRevertedRelease()
+    const head = fixture.git("rev-parse", "HEAD")
+    const result = await fixture.run({ yes: true })
+    expect(result.error?.message).toBe(
+      'Abandon the release "Release fixture-package@1.0.1"? --yes confirms only the release; run without --yes to answer this question.',
+    )
+    expect(result.questions).toEqual([])
+    expect(fixture.git("rev-parse", "HEAD")).toBe(head)
+  })
+
+  it.each([
+    [{}, "A release would ask whether to abandon it."],
+    [
+      { yes: true },
+      "With --yes, a new release would stop, since abandoning the incomplete release needs your answer.",
+    ],
+  ])("previews the abandonment in a dry run with %p", async (options, message) => {
+    const fixture = await createRevertedRelease()
+    const result = await fixture.run({ ...options, dryRun: true })
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual([])
+    expect(result.output).toContain(message)
+  })
+
   it("lets a new release start once abandoned", async () => {
     const fixture = await createRevertedRelease()
     const result = await fixture.run()
@@ -505,6 +530,24 @@ describe("resume", () => {
     const fixture = createFixture()
     const result = await fixture.run({ resume: true })
     expect(result.error?.message).toContain("Nothing to resume: no release commit found.")
+  })
+
+  it("finishes the release without asking with --yes", async () => {
+    const fixture = createFixture()
+    fixture.updateState(state => {
+      state.gh.createFailure = true
+    })
+    await runInterrupted(fixture, "HTTP 502")
+    fixture.updateState(state => {
+      state.gh.createFailure = false
+    })
+    const result = await fixture.run({ resume: true, yes: true })
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual([])
+    expect(result.output).toContain(
+      '✔ Finish the release "Release fixture-package@1.0.1"? Confirmed with --yes.',
+    )
+    expectReleased(fixture, "1.0.1")
   })
 
   it("shows the remaining steps in a dry run", async () => {

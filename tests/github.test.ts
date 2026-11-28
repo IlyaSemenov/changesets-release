@@ -376,6 +376,19 @@ describe("preparing a release for GitHub Actions", () => {
       expect(fixture.state().npm.publishes).toMatchObject([{ name: packageName, trusted: false }])
     })
 
+    it("does not log in to npm for the first version with --yes", async () => {
+      const fixture = createGitHubFixture()
+      fixture.updateState(state => {
+        state.npm.versions = {}
+        state.npm.user = null
+        state.npm.loginUser = "tester"
+      })
+      const result = await fixture.run({ yes: true })
+      expect(result.error?.message).toContain("npm is not logged in. Run `npm login`")
+      expect(fixture.calls("npm").some(([command]) => command === "login")).toBe(false)
+      expect(fixture.state().gh.runs).toEqual([])
+    })
+
     it("waits until npm shows the first version before dispatching the workflow", async () => {
       const fixture = createGitHubFixture()
       fixture.updateState(state => {
@@ -930,6 +943,24 @@ describe("resuming a release published from GitHub Actions", () => {
     expect(fixture.state().npm.publishes).toEqual([])
     expect((await fixture.runWorkflow()).error).toBeUndefined()
     expectReleased(fixture, "1.0.1")
+  })
+
+  it("dispatches the workflow again without asking with --yes", async () => {
+    const fixture = createGitHubFixture()
+    fixture.updateState(state => {
+      state.gh.runOutcome = { pendingReads: 0, conclusion: "failure" }
+    })
+    expect((await fixture.run()).error?.message).toContain(
+      "The publishing workflow ended with failure",
+    )
+
+    fixture.updateState(state => {
+      state.gh.runOutcome = { pendingReads: 0, conclusion: "success" }
+    })
+    const result = await fixture.run({ resume: true, yes: true })
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual([])
+    expect(fixture.state().gh.runs).toHaveLength(2)
   })
 
   it("dispatches after the previous dispatch failed", async () => {

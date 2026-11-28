@@ -31,6 +31,15 @@ describe("release", () => {
     expect(fixture.calls("npm").filter(([command]) => command === "access")).toHaveLength(1)
   })
 
+  it("releases without asking with --yes", async () => {
+    const fixture = createFixture()
+    const result = await fixture.run({ yes: true })
+    expect(result.error).toBeUndefined()
+    expect(result.questions).toEqual([])
+    expect(result.output).toContain(`✔ Release ${packageName}@1.0.1? Confirmed with --yes.`)
+    expectReleased(fixture, "1.0.1")
+  })
+
   it.each([
     ["minor", "1.1.0", "Minor Changes"],
     ["major", "2.0.0", "Major Changes"],
@@ -451,6 +460,20 @@ describe("CI checks", () => {
     expectReleased(fixture, "1.0.1")
   })
 
+  it("does not release despite failed checks with --yes", async () => {
+    const fixture = createFixture()
+    setChecks(fixture, { runs: [{ name: "test", conclusion: "failure", missingReads: 1 }] })
+    const head = fixture.git("rev-parse", "HEAD")
+    const result = await fixture.run({ yes: true })
+    expect(result.error?.message).toBe(
+      "Release despite the failed CI? --yes confirms only the release; run without --yes to answer this question.",
+    )
+    expect(result.questions).toEqual([])
+    expect(fixture.git("rev-parse", "HEAD")).toBe(head)
+    expect(fixture.git("status", "--porcelain", "--untracked-files=all")).toBe("")
+    expect(fixture.state().npm.publishes).toEqual([])
+  })
+
   it("does not wait for the user who has just answered about failed checks", async () => {
     const fixture = createFixture()
     setChecks(fixture, { runs: [{ name: "test", conclusion: "failure", missingReads: 1 }] })
@@ -559,6 +582,14 @@ describe("checks after the confirmation", () => {
     ])
     expect(checked).toBe(true)
     expect(commits).toBe("1")
+    expectReleased(fixture, "1.0.1")
+  })
+
+  it("does not wait for the user between long checks and publishing with --yes", async () => {
+    const fixture = createFixture({ packageJson: { scripts: { "release:check": releaseCheck } } })
+    const result = await fixture.run({ yes: true }, { waitForUser: () => false })
+    expect(result.error).toBeUndefined()
+    expect(result.waits).toEqual([])
     expectReleased(fixture, "1.0.1")
   })
 

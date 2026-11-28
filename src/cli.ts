@@ -27,6 +27,9 @@ Options:
                     of other packages pending; repeat for several
   --dry-run         Show what a release would do without changing anything
   --resume          Finish an interrupted release
+  --yes             Release without confirmation or an interactive terminal, such
+                    as from a coding agent; stop instead of asking other questions
+                    or logging in to npm or GitHub
   -h, --help        Show this help
   -v, --version     Show the changesets-release version
 
@@ -44,6 +47,7 @@ async function main() {
       only: { type: "string", multiple: true },
       "dry-run": { type: "boolean" },
       resume: { type: "boolean" },
+      yes: { type: "boolean" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
     },
@@ -103,7 +107,7 @@ async function main() {
   if (publish !== undefined && !publishModes.includes(publish as PublishMode)) {
     throw new ReleaseError(`--publish must be ${publishModes.join(" or ")}, not ${publish}.`)
   }
-  if (!values["dry-run"] && !process.stdin.isTTY) {
+  if (!values["dry-run"] && !values.yes && !process.stdin.isTTY) {
     // npm keeps `npm run release --dry-run` to itself, so the script starts a release.
     throw new ReleaseError(
       "A release needs an interactive terminal. To preview it, pass --dry-run, after `--` with `npm run`.",
@@ -114,6 +118,7 @@ async function main() {
     dryRun: values["dry-run"],
     resume: values.resume,
     only: values.only,
+    yes: values.yes,
   })
 }
 

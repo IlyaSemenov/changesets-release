@@ -197,6 +197,21 @@ Enter [Changesets prerelease mode](https://github.com/changesets/changesets/blob
 Changesets chooses the npm dist-tag of each version, usually the prerelease tag; check it in the confirmation.
 changesets-release marks the GitHub Releases of prerelease versions as prereleases.
 
+### Release from a coding agent
+
+To let a coding agent or a script release without your confirmation, pass `--yes`:
+
+```sh
+npx changesets-release --yes
+```
+
+It shows the release as usual and releases it without asking, even without an interactive terminal; `--resume --yes` finishes an interrupted release the same way.
+It stops instead of logging in to npm or GitHub, releasing despite failed CI, or abandoning an incomplete release; run it without `--yes` to decide these yourself.
+
+[Publish from GitHub Actions](#publish-from-github-actions) to release without logging in to npm on your machine, except for the [first version of a new package](#publish-a-new-package).
+A publication from your machine succeeds without a terminal only when npm does not ask for authentication, such as shortly after you have authenticated and let npm skip two-factor authentication for a few minutes.
+When npm asks for it, the release stops after pushing the release commit; finish it in your terminal with the `--resume` command from the error message.
+
 ## Publish from GitHub Actions
 
 To publish with [npm provenance](https://docs.npmjs.com/generating-provenance-statements), add the publishing workflow to your repository.
@@ -359,7 +374,7 @@ Build packages in their `prepack` or `prepublishOnly` scripts: npm runs them on 
 After you confirm a new release, changesets-release waits for the GitHub checks of the commit you release, such as GitHub Actions jobs and commit statuses.
 It does not wait for checks awaiting approval, such as a deployment to a protected environment.
 
-If a check fails, changesets-release lists the failed checks with their links and asks whether to release anyway; the default answer is no.
+If a check fails, changesets-release lists the failed checks with their links and asks whether to release anyway; the default answer is no, and with `--yes` the release stops.
 
 ## Finish an interrupted release
 
@@ -391,7 +406,7 @@ A newly published version can be missing from the npm registry for several minut
 If a release stops because npm does not show a version it has accepted, wait a few minutes and resume.
 
 If a new release stops because the previous one is incomplete, resume that release first.
-If nothing of the incomplete release is on npm or tagged and you have reverted its release commit, changesets-release asks whether to abandon that release instead.
+If nothing of the incomplete release is on npm or tagged and you have reverted its release commit, changesets-release asks whether to abandon that release instead; with `--yes`, it stops.
 Abandon it only if you are sure that npm did not accept any of its versions.
 
 ## Why changesets-release

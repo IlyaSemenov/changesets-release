@@ -179,6 +179,13 @@ describe("tools and authentication", () => {
       expect(result.error?.message).toContain("npm is not logged in. Run `npm login`")
       expect(fixture.state().npm.user).toBeNull()
     })
+
+    it("does not log in with --yes", async () => {
+      const fixture = createLoggedOutFixture()
+      const result = await fixture.run({ yes: true })
+      expect(result.error?.message).toContain("npm is not logged in. Run `npm login`")
+      expect(fixture.calls("npm").filter(([command]) => command === "login")).toEqual([])
+    })
   })
 
   it("fails when the npm user cannot publish the package", async () => {
@@ -253,6 +260,13 @@ describe("tools and authentication", () => {
       const result = await fixture.run({ dryRun: true })
       expect(result.error?.message).toContain("Log in with `gh auth login`")
       expect(fixture.state().gh.authenticated).toBe(false)
+    })
+
+    it("does not log in with --yes", async () => {
+      const fixture = createLoggedOutFixture()
+      const result = await fixture.run({ yes: true })
+      expect(result.error?.message).toContain("Log in with `gh auth login`")
+      expect(fixture.calls("gh").filter(([, command]) => command === "login")).toEqual([])
     })
   })
 

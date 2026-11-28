@@ -38,7 +38,7 @@ export async function confirmFailedChecks(
     return null
   }
   if (hasFailures(checks)) {
-    await confirmRelease(ctx, commit, checks)
+    await confirmReleaseDespiteFailedChecks(ctx, commit, checks)
     return null
   }
   if (isRunning(checks)) {
@@ -92,7 +92,7 @@ export async function awaitChecks(ctx: Context, repo: string, pending: PendingCh
     checks = await rereadChecks(ctx, repo, commit)
   }
   if (hasFailures(checks)) {
-    await confirmRelease(ctx, commit, checks)
+    await confirmReleaseDespiteFailedChecks(ctx, commit, checks)
     return true
   }
   warnAboutApprovals(ctx, commit, checks)
@@ -163,7 +163,11 @@ function describeReadFailure(ctx: Context, commit: string, error: unknown) {
 }
 
 /** Asks whether to release a commit despite its failed checks, and fails when the user declines. */
-async function confirmRelease(ctx: Context, commit: string, checks: CommitCheck[]) {
+async function confirmReleaseDespiteFailedChecks(
+  ctx: Context,
+  commit: string,
+  checks: CommitCheck[],
+) {
   logWarning(ctx, formatFailures(commit, checks))
   if (!(await ctx.confirm("Release despite the failed CI?"))) {
     throw new ReleaseError("Release cancelled.")
